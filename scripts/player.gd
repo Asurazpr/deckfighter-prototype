@@ -1,0 +1,73 @@
+class_name Player
+extends CharacterBody2D
+
+signal hp_changed(current_hp: int, max_hp: int)
+signal defense_performed(defense_type: String)
+
+const SPEED := 250.0
+const JUMP_VELOCITY := -500.0
+const GRAVITY := 1300.0
+
+@export var max_hp := 100
+
+var hp := max_hp
+var input_enabled := true
+
+@onready var body: ColorRect = $Body
+@onready var state_label: Label = $StateLabel
+
+func _ready() -> void:
+	hp = max_hp
+	hp_changed.emit(hp, max_hp)
+	_set_state("READY")
+
+func _physics_process(delta: float) -> void:
+	if not is_on_floor():
+		velocity.y += GRAVITY * delta
+
+	var direction := 0.0
+	if input_enabled:
+		direction = Input.get_axis("move_left", "move_right")
+		if Input.is_action_just_pressed("jump") and is_on_floor():
+			velocity.y = JUMP_VELOCITY
+			defense_performed.emit("jump")
+			_flash(Color.SKY_BLUE, "JUMP")
+		if Input.is_action_just_pressed("block"):
+			defense_performed.emit("block")
+			_flash(Color.DODGER_BLUE, "BLOCK")
+		if Input.is_action_just_pressed("crouch_block"):
+			defense_performed.emit("crouch_block")
+			_flash(Color.CORNFLOWER_BLUE, "CROUCH")
+		if Input.is_action_just_pressed("backstep"):
+			velocity.x = -SPEED * 2.2
+			defense_performed.emit("backstep")
+			_flash(Color.LIGHT_BLUE, "BACKSTEP")
+
+	if absf(velocity.x) < SPEED * 1.8:
+		velocity.x = direction * SPEED
+	else:
+		velocity.x = move_toward(velocity.x, direction * SPEED, SPEED * delta * 5.0)
+
+	move_and_slide()
+
+func take_damage(amount: int) -> void:
+	if amount <= 0:
+		return
+	hp = maxi(0, hp - amount)
+	hp_changed.emit(hp, max_hp)
+	_flash(Color.INDIAN_RED, "HIT")
+
+func perform_card_action(card: Resource) -> void:
+	_flash(Color.GOLD, card.display_name.to_upper())
+
+func set_input_enabled(enabled: bool) -> void:
+	input_enabled = enabled
+
+func _flash(color: Color, label: String) -> void:
+	body.color = color
+	_set_state(label)
+	var tween := create_tween()
+	tween.tween_property(body, "color", Color(0.25, 0.75, 1.0), 0.18)
+
+func _set_state(text: String) -> void:
+	state_label.text = text

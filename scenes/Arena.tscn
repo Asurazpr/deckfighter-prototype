@@ -1,0 +1,181 @@
+[gd_scene load_steps=8 format=3 uid="uid://arena_scene"]
+
+[ext_resource type="PackedScene" path="res://scenes/Player.tscn" id="1_player"]
+[ext_resource type="PackedScene" path="res://scenes/Enemy.tscn" id="2_enemy"]
+[ext_resource type="Script" path="res://scripts/arena.gd" id="3_arena"]
+[ext_resource type="Script" path="res://scripts/deck_manager.gd" id="4_deck"]
+[ext_resource type="Script" path="res://scripts/combat_manager.gd" id="5_combat"]
+[ext_resource type="Script" path="res://scripts/ui_manager.gd" id="6_ui"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_floor"]
+size = Vector2(1400, 44)
+
+[node name="Arena" type="Node2D"]
+script = ExtResource("3_arena")
+
+[node name="Background" type="ColorRect" parent="."]
+offset_right = 1280.0
+offset_bottom = 720.0
+color = Color(0.08, 0.09, 0.11, 1)
+
+[node name="Floor" type="StaticBody2D" parent="."]
+position = Vector2(640, 610)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Floor"]
+shape = SubResource("RectangleShape2D_floor")
+
+[node name="FloorVisual" type="ColorRect" parent="Floor"]
+offset_left = -700.0
+offset_top = -22.0
+offset_right = 700.0
+offset_bottom = 22.0
+color = Color(0.18, 0.2, 0.23, 1)
+
+[node name="Player" parent="." instance=ExtResource("1_player")]
+position = Vector2(420, 588)
+
+[node name="Enemy" parent="." instance=ExtResource("2_enemy")]
+position = Vector2(820, 588)
+
+[node name="DeckManager" type="Node" parent="."]
+script = ExtResource("4_deck")
+
+[node name="CombatManager" type="Node" parent="."]
+script = ExtResource("5_combat")
+
+[node name="UI" type="CanvasLayer" parent="."]
+script = ExtResource("6_ui")
+
+[node name="Root" type="Control" parent="UI"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="TopPanel" type="PanelContainer" parent="UI/Root"]
+layout_mode = 1
+anchors_preset = 10
+anchor_right = 1.0
+offset_left = 24.0
+offset_top = 18.0
+offset_right = -24.0
+offset_bottom = 124.0
+grow_horizontal = 2
+
+[node name="TopMargin" type="MarginContainer" parent="UI/Root/TopPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 16
+theme_override_constants/margin_top = 12
+theme_override_constants/margin_right = 16
+theme_override_constants/margin_bottom = 12
+
+[node name="StatsGrid" type="GridContainer" parent="UI/Root/TopPanel/TopMargin"]
+layout_mode = 2
+columns = 2
+
+[node name="PlayerHPLabel" type="Label" parent="UI/Root/TopPanel/TopMargin/StatsGrid"]
+layout_mode = 2
+text = "Player HP"
+
+[node name="PlayerHPBar" type="ProgressBar" parent="UI/Root/TopPanel/TopMargin/StatsGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+max_value = 100.0
+value = 100.0
+
+[node name="EnemyHPLabel" type="Label" parent="UI/Root/TopPanel/TopMargin/StatsGrid"]
+layout_mode = 2
+text = "Enemy HP"
+
+[node name="EnemyHPBar" type="ProgressBar" parent="UI/Root/TopPanel/TopMargin/StatsGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+max_value = 120.0
+value = 120.0
+
+[node name="StanceLabel" type="Label" parent="UI/Root/TopPanel/TopMargin/StatsGrid"]
+layout_mode = 2
+text = "Enemy Stance"
+
+[node name="StanceBar" type="ProgressBar" parent="UI/Root/TopPanel/TopMargin/StatsGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+max_value = 100.0
+
+[node name="FrameLabel" type="Label" parent="UI/Root/TopPanel/TopMargin/StatsGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Frame Advantage: 0"
+
+[node name="LogLabel" type="Label" parent="UI/Root/TopPanel/TopMargin/StatsGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+text = "Duel start."
+
+[node name="CombatLogPanel" type="PanelContainer" parent="UI/Root"]
+layout_mode = 1
+anchors_preset = 6
+anchor_left = 1.0
+anchor_top = 0.5
+anchor_right = 1.0
+anchor_bottom = 0.5
+offset_left = -340.0
+offset_top = -190.0
+offset_right = -24.0
+offset_bottom = 190.0
+grow_horizontal = 0
+grow_vertical = 2
+
+[node name="CombatLogMargin" type="MarginContainer" parent="UI/Root/CombatLogPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 14
+theme_override_constants/margin_top = 12
+theme_override_constants/margin_right = 14
+theme_override_constants/margin_bottom = 12
+
+[node name="CombatLogBox" type="VBoxContainer" parent="UI/Root/CombatLogPanel/CombatLogMargin"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="CombatLogTitle" type="Label" parent="UI/Root/CombatLogPanel/CombatLogMargin/CombatLogBox"]
+layout_mode = 2
+text = "Combat Log"
+
+[node name="CombatLogLabel" type="Label" parent="UI/Root/CombatLogPanel/CombatLogMargin/CombatLogBox"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_vertical = 3
+text = "Waiting for events..."
+autowrap_mode = 3
+
+[node name="HandPanel" type="PanelContainer" parent="UI/Root"]
+layout_mode = 1
+anchors_preset = 12
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 24.0
+offset_top = -168.0
+offset_right = -24.0
+offset_bottom = -18.0
+grow_horizontal = 2
+grow_vertical = 0
+
+[node name="HandMargin" type="MarginContainer" parent="UI/Root/HandPanel"]
+layout_mode = 2
+theme_override_constants/margin_left = 16
+theme_override_constants/margin_top = 12
+theme_override_constants/margin_right = 16
+theme_override_constants/margin_bottom = 12
+
+[node name="HandContainer" type="HBoxContainer" parent="UI/Root/HandPanel/HandMargin"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 12
