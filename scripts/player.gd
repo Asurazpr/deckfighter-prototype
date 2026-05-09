@@ -32,6 +32,9 @@ func _physics_process(delta: float) -> void:
 			velocity.y = JUMP_VELOCITY
 			defense_performed.emit("jump")
 			_flash(Color.SKY_BLUE, "JUMP")
+		if Input.is_action_just_pressed("perfect_block"):
+			defense_performed.emit("perfect_block")
+			_flash(Color.GOLD, "PERFECT BLOCK")
 		if Input.is_action_just_pressed("block"):
 			defense_performed.emit("block")
 			_flash(Color.DODGER_BLUE, "BLOCK")
@@ -59,6 +62,9 @@ func take_damage(amount: int) -> void:
 
 func perform_card_action(card: Resource) -> void:
 	_flash(Color.GOLD, card.display_name.to_upper())
+
+func show_state(label: String, color: Color) -> void:
+	_flash(color, label)
 
 func set_input_enabled(enabled: bool) -> void:
 	input_enabled = enabled

@@ -11,13 +11,17 @@ signal break_ended
 enum State { IDLE, TELEGRAPH, ATTACK, BREAK }
 
 const ATTACKS := {
-	"HIGH": {"damage": 14, "answer": "block", "alt_answer": "backstep"},
-	"MID": {"damage": 12, "answer": "block", "alt_answer": ""},
-	"LOW": {"damage": 10, "answer": "crouch_block", "alt_answer": "jump"}
+	"HIGH": {"damage": 14, "startup_frame": 6, "range": 80.0, "counter_damage": 18},
+	"MID": {"damage": 12, "startup_frame": 9, "range": 90.0, "counter_damage": 16},
+	"LOW": {"damage": 10, "startup_frame": 10, "range": 75.0, "counter_damage": 14},
+	"OVERHEAD": {"damage": 16, "startup_frame": 15, "range": 85.0, "counter_damage": 22}
 }
 
 @export var max_hp := 120
 @export var max_stance := 100
+@export var punish_startup := 5
+@export var punish_range := 120.0
+@export var punish_damage := 18
 
 var hp := max_hp
 var stance := 0
@@ -31,6 +35,7 @@ func _ready() -> void:
 	hp = max_hp
 	hp_changed.emit(hp, max_hp)
 	stance_changed.emit(stance, max_stance)
+	telegraph_label.add_theme_font_size_override("font_size", 42)
 	_set_idle()
 
 func can_act() -> bool:
@@ -56,13 +61,23 @@ func resolve_attack() -> Dictionary:
 	return {
 		"type": current_attack,
 		"damage": data["damage"],
-		"answer": data["answer"],
-		"alt_answer": data["alt_answer"]
+		"startup_frame": data["startup_frame"],
+		"range": data["range"],
+		"counter_damage": data["counter_damage"]
 	}
 
 func finish_attack() -> void:
 	if state == State.ATTACK:
 		_set_idle()
+
+func perform_punish_combo() -> int:
+	state = State.ATTACK
+	current_attack = "PUNISH"
+	telegraph_label.text = "PUNISH"
+	body.color = Color.CRIMSON
+	await get_tree().create_timer(0.25, true, false, true).timeout
+	_set_idle()
+	return punish_damage
 
 func take_hit(damage: int, stance_damage: int) -> void:
 	if state == State.BREAK:

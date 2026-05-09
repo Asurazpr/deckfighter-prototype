@@ -25,10 +25,10 @@ func start_combat() -> void:
 	draw_to_hand()
 	_emit_all()
 
-func play_card(index: int) -> Resource:
+func play_card(index: int, allow_break_launcher := false) -> Resource:
 	if index < 0 or index >= hand.size():
 		return null
-	if not is_card_playable(index):
+	if not is_card_playable(index, allow_break_launcher):
 		return null
 
 	var card: Resource = hand[index]
@@ -46,18 +46,37 @@ func reset_combo_route() -> void:
 	_reset_combo_route_state()
 	hand_changed.emit(hand)
 
-func is_card_playable(index: int) -> bool:
+func is_card_playable(index: int, allow_break_launcher := false) -> bool:
 	if index < 0 or index >= hand.size():
 		return false
-	if not combo_route_active:
-		return true
-
 	var card: Resource = hand[index]
-	return current_follow_up_card_ids.has(card.id)
+	if not combo_route_active:
+		return card.id == "launcher" if allow_break_launcher else true
+
+	if current_follow_up_card_ids.has(card.id):
+		return true
+	return allow_break_launcher and card.id == "launcher" and not has_route_valid_playable_card()
 
 func has_valid_playable_card() -> bool:
 	for i in range(hand.size()):
 		if is_card_playable(i):
+			return true
+	return false
+
+func has_break_playable_card() -> bool:
+	for i in range(hand.size()):
+		if is_card_playable(i, true):
+			return true
+	return false
+
+func has_route_valid_playable_card() -> bool:
+	for i in range(hand.size()):
+		if i < 0 or i >= hand.size():
+			continue
+		if not combo_route_active:
+			return true
+		var card: Resource = hand[i]
+		if current_follow_up_card_ids.has(card.id):
 			return true
 	return false
 
@@ -94,15 +113,15 @@ func _draw_card() -> Resource:
 
 func _build_starter_deck() -> void:
 	card_library = {
-		"jab": CardDataScript.make("jab", "Jab", "Jab", "Fast starter that branches into pressure.", 6, 8, 1, 1, ["heavy_slash", "step_slash", "guard_break"]),
-		"heavy_slash": CardDataScript.make("heavy_slash", "Heavy Slash", "Heavy", "Heavy finisher with real damage.", 16, 12, 6, 0),
-		"step_slash": CardDataScript.make("step_slash", "Step Slash", "Step", "Forward slash that keeps the route alive.", 10, 10, 1, 1, ["launcher", "jab"]),
-		"guard_break": CardDataScript.make("guard_break", "Guard Break", "Break", "Heavy stance pressure into launcher routes.", 7, 26, 2, 1, ["launcher", "heavy_slash"]),
-		"launcher": CardDataScript.make("launcher", "Launcher", "Launch", "Pops the enemy into an air follow.", 9, 12, 1, 2, ["air_follow"]),
-		"air_follow": CardDataScript.make("air_follow", "Air Follow", "Air", "Airborne continuation.", 8, 8, 1, 1, ["ground_smash", "gunshot"]),
-		"ground_smash": CardDataScript.make("ground_smash", "Ground Smash", "Smash", "Big knockdown into reset.", 18, 18, 3, 0, ["reset_step"]),
-		"gunshot": CardDataScript.make("gunshot", "Gunshot", "Shot", "Quick ranged juggle extension.", 6, 6, 1, 1, ["air_follow", "reset_step"]),
-		"reset_step": CardDataScript.make("reset_step", "Reset Step", "Reset", "Ends the route and returns to neutral.", 0, 0, 6, 0)
+		"jab": CardDataScript.make("jab", "Jab", "Jab", "Fast starter that branches into pressure.", 6, 8, 1, 1, 5, 70.0, 0.0, -2, ["starter", "interrupt"], ["heavy_slash", "step_slash", "guard_break"]),
+		"heavy_slash": CardDataScript.make("heavy_slash", "Heavy Slash", "Heavy", "Heavy finisher with real damage.", 16, 12, 6, 0, 12, 85.0, 0.0, -5, ["attack"]),
+		"step_slash": CardDataScript.make("step_slash", "Step Slash", "Step", "Forward slash that keeps the route alive.", 10, 10, 1, 1, 8, 85.0, 60.0, -3, ["starter", "movement", "interrupt"], ["launcher", "jab"]),
+		"guard_break": CardDataScript.make("guard_break", "Guard Break", "Break", "Heavy stance pressure into launcher routes.", 7, 26, 2, 1, 13, 75.0, 0.0, -4, ["pressure"], ["launcher", "heavy_slash"]),
+		"launcher": CardDataScript.make("launcher", "Launcher", "Launch", "Pops the enemy into an air follow.", 9, 12, 1, 2, 10, 70.0, 0.0, -4, ["launcher"], ["air_follow"]),
+		"air_follow": CardDataScript.make("air_follow", "Air Follow", "Air", "Airborne continuation.", 8, 8, 1, 1, 8, 90.0, 0.0, -3, ["air"], ["ground_smash", "gunshot"]),
+		"ground_smash": CardDataScript.make("ground_smash", "Ground Smash", "Smash", "Big knockdown with huge pushback, but very unsafe up close.", 26, 34, 8, 0, 14, 90.0, 0.0, -6, ["finisher"], ["reset_step"]),
+		"gunshot": CardDataScript.make("gunshot", "Gunshot", "Shot", "Quick ranged juggle extension.", 6, 6, 1, 1, 7, 220.0, 0.0, -1, ["ranged", "interrupt"], ["air_follow", "reset_step"]),
+		"reset_step": CardDataScript.make("reset_step", "Reset Step", "Reset", "Creates distance and safely exits pressure.", 0, 0, 1, 0, 0, 0.0, -100.0, 0, ["movement", "finisher"])
 	}
 
 	var ids := [

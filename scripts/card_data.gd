@@ -6,11 +6,16 @@ enum Target { ENEMY, SELF }
 @export var id := ""
 @export var display_name := ""
 @export var tag := ""
+@export var tags: Array[String] = []
 @export_multiline var description := ""
 @export var damage := 0
 @export var stance_damage := 0
 @export var frame_cost := 1
 @export var frame_gain := 0
+@export var startup_frame := 0
+@export var range := 0.0
+@export var movement_delta := 0.0
+@export var whiff_frame_penalty := 0
 @export var target := Target.ENEMY
 @export var allowed_follow_up_card_ids: Array[String] = []
 
@@ -23,6 +28,11 @@ static func make(
 	_stance_damage: int,
 	_frame_cost: int,
 	_frame_gain: int,
+	_startup_frame: int,
+	_range: float,
+	_movement_delta: float,
+	_whiff_frame_penalty: int,
+	_tags: Array[String] = [],
 	_allowed_follow_up_card_ids: Array[String] = []
 ) -> Resource:
 	var card := new()
@@ -34,5 +44,10 @@ static func make(
 	card.stance_damage = _stance_damage
 	card.frame_cost = _frame_cost
 	card.frame_gain = _frame_gain
+	card.startup_frame = _startup_frame
+	card.range = _range
+	card.movement_delta = _movement_delta
+	card.whiff_frame_penalty = _whiff_frame_penalty
+	card.tags = _tags.duplicate()
 	card.allowed_follow_up_card_ids = _allowed_follow_up_card_ids.duplicate()
 	return card
