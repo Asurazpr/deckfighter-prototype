@@ -11,14 +11,16 @@ signal break_ended
 enum State { IDLE, TELEGRAPH, ATTACK, BREAK }
 
 const ATTACKS := {
-	"HIGH": {"damage": 14, "startup_frame": 6, "range": 80.0, "counter_damage": 18},
-	"MID": {"damage": 12, "startup_frame": 9, "range": 90.0, "counter_damage": 16},
-	"LOW": {"damage": 10, "startup_frame": 10, "range": 75.0, "counter_damage": 14},
-	"OVERHEAD": {"damage": 16, "startup_frame": 15, "range": 85.0, "counter_damage": 22}
+	"HIGH": {"damage": 14, "startup_frame": 6, "range": 80.0, "counter_damage": 18, "hitbox_width": 85.0, "hitbox_height": 45.0, "hitbox_offset_y": -65.0},
+	"MID": {"damage": 12, "startup_frame": 9, "range": 90.0, "counter_damage": 16, "hitbox_width": 95.0, "hitbox_height": 55.0, "hitbox_offset_y": -40.0},
+	"LOW": {"damage": 10, "startup_frame": 10, "range": 75.0, "counter_damage": 14, "hitbox_width": 85.0, "hitbox_height": 35.0, "hitbox_offset_y": -15.0},
+	"OVERHEAD": {"damage": 16, "startup_frame": 15, "range": 85.0, "counter_damage": 22, "hitbox_width": 100.0, "hitbox_height": 75.0, "hitbox_offset_y": -70.0}
 }
 
 @export var max_hp := 120
 @export var max_stance := 100
+@export var hurtbox_width := 50.0
+@export var hurtbox_height := 90.0
 @export var punish_startup := 5
 @export var punish_range := 120.0
 @export var punish_damage := 18
@@ -63,11 +65,18 @@ func resolve_attack() -> Dictionary:
 		"damage": data["damage"],
 		"startup_frame": data["startup_frame"],
 		"range": data["range"],
-		"counter_damage": data["counter_damage"]
+		"counter_damage": data["counter_damage"],
+		"hitbox_width": data["hitbox_width"],
+		"hitbox_height": data["hitbox_height"],
+		"hitbox_offset_y": data["hitbox_offset_y"]
 	}
 
 func finish_attack() -> void:
 	if state == State.ATTACK:
+		_set_idle()
+
+func clear_intent() -> void:
+	if state == State.TELEGRAPH or state == State.ATTACK or state == State.IDLE:
 		_set_idle()
 
 func perform_punish_combo() -> int:

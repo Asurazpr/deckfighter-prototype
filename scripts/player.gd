@@ -9,9 +9,12 @@ const JUMP_VELOCITY := -500.0
 const GRAVITY := 1300.0
 
 @export var max_hp := 100
+@export var hurtbox_width := 50.0
+@export var hurtbox_height := 90.0
 
 var hp := max_hp
 var input_enabled := true
+var free_movement_enabled := true
 
 @onready var body: ColorRect = $Body
 @onready var state_label: Label = $StateLabel
@@ -26,15 +29,12 @@ func _physics_process(delta: float) -> void:
 		velocity.y += GRAVITY * delta
 
 	var direction := 0.0
-	if input_enabled:
+	if input_enabled and free_movement_enabled:
 		direction = Input.get_axis("move_left", "move_right")
 		if Input.is_action_just_pressed("jump") and is_on_floor():
 			velocity.y = JUMP_VELOCITY
 			defense_performed.emit("jump")
 			_flash(Color.SKY_BLUE, "JUMP")
-		if Input.is_action_just_pressed("perfect_block"):
-			defense_performed.emit("perfect_block")
-			_flash(Color.GOLD, "PERFECT BLOCK")
 		if Input.is_action_just_pressed("block"):
 			defense_performed.emit("block")
 			_flash(Color.DODGER_BLUE, "BLOCK")
@@ -68,6 +68,11 @@ func show_state(label: String, color: Color) -> void:
 
 func set_input_enabled(enabled: bool) -> void:
 	input_enabled = enabled
+
+func set_free_movement_enabled(enabled: bool) -> void:
+	free_movement_enabled = enabled
+	if not enabled:
+		velocity.x = 0.0
 
 func _flash(color: Color, label: String) -> void:
 	body.color = color

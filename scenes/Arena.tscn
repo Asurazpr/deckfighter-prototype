@@ -32,10 +32,10 @@ offset_bottom = 22.0
 color = Color(0.18, 0.2, 0.23, 1)
 
 [node name="Player" parent="." instance=ExtResource("1_player")]
-position = Vector2(420, 588)
+position = Vector2(520, 588)
 
 [node name="Enemy" parent="." instance=ExtResource("2_enemy")]
-position = Vector2(820, 588)
+position = Vector2(640, 588)
 
 [node name="DeckManager" type="Node" parent="."]
 script = ExtResource("4_deck")

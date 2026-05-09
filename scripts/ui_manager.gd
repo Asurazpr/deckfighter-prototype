@@ -11,6 +11,13 @@ extends CanvasLayer
 @onready var root: Control = $Root
 
 const MAX_COMBAT_LOG_EVENTS := 8
+const PREDICTION_COLORS := {
+	"interrupt": Color(0.55, 1.0, 0.62),
+	"trade": Color(1.0, 0.9, 0.35),
+	"too_slow": Color(1.0, 0.45, 0.42),
+	"whiff": Color(0.62, 0.62, 0.62),
+	"normal": Color.WHITE
+}
 
 var combat_manager: Node
 var deck_manager_ref: Node
@@ -72,15 +79,10 @@ func _on_hand_changed(hand: Array) -> void:
 	for i in range(hand.size()):
 		var card: Resource = hand[i]
 		var button := Button.new()
-		button.custom_minimum_size = Vector2(170, 116)
-		button.text = "%s\nFrame: -%d / +%d\nStance: %d\nNext: %s" % [
-			card.display_name,
-			card.frame_cost,
-			card.frame_gain,
-			card.stance_damage,
-			deck_manager_ref.get_follow_up_tags(card)
-		]
-		button.tooltip_text = card.description
+		button.custom_minimum_size = Vector2(190, 154)
+		button.text = _format_card_text(card)
+		button.tooltip_text = _format_card_tooltip(card)
+		button.mouse_entered.connect(_show_card_debug.bind(card))
 		button.pressed.connect(_on_card_pressed.bind(i))
 		hand_container.add_child(button)
 		card_buttons.append(button)
@@ -122,8 +124,8 @@ func _remove_space_from_ui_accept() -> void:
 func _build_debug_label() -> void:
 	debug_label = Label.new()
 	debug_label.position = Vector2(24, 140)
-	debug_label.size = Vector2(320, 96)
-	debug_label.text = "Distance: 0\nEnemy intent: None\nEnemy startup frame: 0\nCurrent mode: Neutral"
+	debug_label.size = Vector2(360, 150)
+	debug_label.text = "Distance: 0\nEnemy intent: None\nEnemy remaining startup: 0\nLast player startup: 0\nEnemy vulnerable frames: 0\nMode: Neutral"
 	debug_label.add_theme_font_size_override("font_size", 16)
 	root.add_child(debug_label)
 
@@ -154,6 +156,51 @@ func _refresh_card_enabled_state() -> void:
 		return
 	for i in range(card_buttons.size()):
 		card_buttons[i].disabled = not combat_manager.is_hand_card_playable(i)
+		card_buttons[i].modulate = _prediction_color_for_card(i)
+
+func _prediction_color_for_card(index: int) -> Color:
+	if combat_manager == null or not combat_manager.has_method("get_card_prediction"):
+		return Color.WHITE
+	var prediction := String(combat_manager.get_card_prediction(index))
+	return PREDICTION_COLORS.get(prediction, Color.WHITE)
+
+func _format_card_text(card: Resource) -> String:
+	return "%s\nDMG %d | ST %d\nStart %df\nHit +%d | Whiff %s%d\nNext: %s" % [
+		card.display_name,
+		card.damage,
+		card.stance_damage,
+		card.startup_frame,
+		card.frame_gain,
+		"+" if int(card.whiff_frame_penalty) >= 0 else "",
+		card.whiff_frame_penalty,
+		deck_manager_ref.get_follow_up_tags(card)
+	]
+
+func _format_card_tooltip(card: Resource) -> String:
+	return "%s\nStartup: %df\nDamage: %d\nStance Damage: %d\nFrame Cost: %d\nFrame Gain: %d\nWhiff Penalty: %d\nTags: %s\nRoute IDs: %s" % [
+		card.description,
+		card.startup_frame,
+		card.damage,
+		card.stance_damage,
+		card.frame_cost,
+		card.frame_gain,
+		card.whiff_frame_penalty,
+		", ".join(card.tags) if not card.tags.is_empty() else "None",
+		", ".join(card.allowed_follow_up_card_ids) if not card.allowed_follow_up_card_ids.is_empty() else "None"
+	]
+
+func _show_card_debug(card: Resource) -> void:
+	log_label.text = "Card: %s | Start %df | DMG %d | ST %d | Cost %d | Hit +%d | Whiff %d | Tags: %s | Route: %s" % [
+		card.display_name,
+		card.startup_frame,
+		card.damage,
+		card.stance_damage,
+		card.frame_cost,
+		card.frame_gain,
+		card.whiff_frame_penalty,
+		", ".join(card.tags) if not card.tags.is_empty() else "None",
+		", ".join(card.allowed_follow_up_card_ids) if not card.allowed_follow_up_card_ids.is_empty() else "None"
+	]
 
 func _refresh_combat_log() -> void:
 	var text := ""
