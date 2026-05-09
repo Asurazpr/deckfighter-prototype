@@ -9,6 +9,11 @@ signal break_started
 signal break_ended
 
 enum State { IDLE, TELEGRAPH, ATTACK, BREAK }
+enum StanceState { NORMAL, BROKEN_HITSTUN, BROKEN_BLOCKSTUN, RECOVERING_PROTECTED }
+
+const STANCE_BREAK_HITSTUN_FRAMES := 45
+const STANCE_BREAK_BLOCK_RECOVERY_FRAMES := 30
+const STANCE_PROTECTION_RECOVERY_FRAMES := 30
 
 const ATTACKS := {
 	"HIGH": {"damage": 14, "startup_frame": 6, "range": 80.0, "counter_damage": 18, "hitbox_width": 85.0, "hitbox_height": 45.0, "hitbox_offset_y": -65.0},
@@ -28,6 +33,10 @@ const ATTACKS := {
 var hp := max_hp
 var stance := 0
 var state := State.IDLE
+var stance_state := StanceState.NORMAL
+var stance_recovery_frames_remaining := 0
+var stance_break_stun_frames_remaining := 0
+var stance_protection_frames_remaining := 0
 var current_attack := ""
 
 @onready var body: ColorRect = $Body
@@ -41,7 +50,7 @@ func _ready() -> void:
 	_set_idle()
 
 func can_act() -> bool:
-	return state == State.IDLE
+	return state == State.IDLE and stance_state == StanceState.NORMAL
 
 func start_attack() -> void:
 	if not can_act():
@@ -89,7 +98,7 @@ func perform_punish_combo() -> int:
 	return punish_damage
 
 func take_hit(damage: int, stance_damage: int) -> void:
-	if state == State.BREAK:
+	if stance_state == StanceState.BROKEN_HITSTUN:
 		damage = int(ceil(damage * 1.5))
 
 	hp = maxi(0, hp - damage)
@@ -98,26 +107,99 @@ func take_hit(damage: int, stance_damage: int) -> void:
 	_flash_hit()
 
 func add_stance_damage(amount: int) -> void:
-	if state == State.BREAK or amount <= 0:
+	if _stance_damage_is_protected():
+		if amount > 0:
+			print("Stance protected: ignored %d stance damage" % amount)
+		return
+	if amount <= 0:
 		return
 	stance = mini(max_stance, stance + amount)
 	stance_changed.emit(stance, max_stance)
 	if stance >= max_stance:
-		enter_break()
+		enter_break(false)
 
-func enter_break() -> void:
+func add_block_stance_damage(amount: int) -> void:
+	if _stance_damage_is_protected():
+		if amount > 0:
+			print("Stance protected: ignored %d stance damage" % amount)
+		return
+	if amount <= 0:
+		return
+	stance = mini(max_stance, stance + amount)
+	stance_changed.emit(stance, max_stance)
+	if stance >= max_stance:
+		enter_break(true)
+
+func enter_break(from_block := false) -> void:
+	if stance_state != StanceState.NORMAL:
+		return
 	state = State.BREAK
+	stance_state = StanceState.BROKEN_BLOCKSTUN if from_block else StanceState.BROKEN_HITSTUN
 	current_attack = ""
 	telegraph_label.text = "BREAK"
 	body.color = Color.ORANGE
+	var break_frames := STANCE_BREAK_BLOCK_RECOVERY_FRAMES if from_block else STANCE_BREAK_HITSTUN_FRAMES
+	stance_break_stun_frames_remaining = break_frames
+	stance_protection_frames_remaining = STANCE_PROTECTION_RECOVERY_FRAMES
+	_update_stance_recovery_total()
 	break_started.emit()
-	await get_tree().create_timer(3.0, true, false, true).timeout
+
+func advance_stance_recovery_frames(frames: int) -> void:
+	if frames <= 0 or stance_state == StanceState.NORMAL:
+		return
+
+	var remaining_frames := frames
+	if stance_break_stun_frames_remaining > 0:
+		var spent_stun := mini(stance_break_stun_frames_remaining, remaining_frames)
+		stance_break_stun_frames_remaining -= spent_stun
+		remaining_frames -= spent_stun
+		if stance_break_stun_frames_remaining <= 0 and stance_state != StanceState.RECOVERING_PROTECTED:
+			stance_state = StanceState.RECOVERING_PROTECTED
+			telegraph_label.text = "PROTECTED"
+
+	if remaining_frames > 0 and stance_protection_frames_remaining > 0:
+		var spent_protection := mini(stance_protection_frames_remaining, remaining_frames)
+		stance_protection_frames_remaining -= spent_protection
+
+	_update_stance_recovery_total()
+	if stance_break_stun_frames_remaining <= 0 and stance_protection_frames_remaining <= 0:
+		_finish_stance_recovery()
+
+func _finish_stance_recovery() -> void:
 	stance = 0
 	stance_changed.emit(stance, max_stance)
+	stance_state = StanceState.NORMAL
+	stance_break_stun_frames_remaining = 0
+	stance_protection_frames_remaining = 0
+	stance_recovery_frames_remaining = 0
 	break_ended.emit()
 	_set_idle()
 
+func _update_stance_recovery_total() -> void:
+	stance_recovery_frames_remaining = stance_break_stun_frames_remaining + stance_protection_frames_remaining
+
+func _stance_damage_is_protected() -> bool:
+	return stance_state == StanceState.BROKEN_HITSTUN or stance_state == StanceState.BROKEN_BLOCKSTUN or stance_state == StanceState.RECOVERING_PROTECTED
+
+func is_stance_protected() -> bool:
+	return _stance_damage_is_protected()
+
+func get_stance_state_name() -> String:
+	match stance_state:
+		StanceState.NORMAL:
+			return "NORMAL"
+		StanceState.BROKEN_HITSTUN:
+			return "BROKEN_HITSTUN"
+		StanceState.BROKEN_BLOCKSTUN:
+			return "BROKEN_BLOCKSTUN"
+		StanceState.RECOVERING_PROTECTED:
+			return "RECOVERING_PROTECTED"
+		_:
+			return "UNKNOWN"
+
 func _set_idle() -> void:
+	if stance_state != StanceState.NORMAL:
+		return
 	state = State.IDLE
 	current_attack = ""
 	telegraph_label.text = "READY"

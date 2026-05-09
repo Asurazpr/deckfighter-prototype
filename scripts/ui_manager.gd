@@ -24,14 +24,18 @@ var deck_manager_ref: Node
 var combat_log_events: Array[String] = []
 var card_buttons: Array[Button] = []
 var debug_label: Label
+var queue_label: Label
 
 func _ready() -> void:
 	_remove_space_from_ui_accept()
 	_build_debug_label()
+	_build_queue_label()
 
 func _process(_delta: float) -> void:
 	if combat_manager != null and debug_label != null:
 		debug_label.text = combat_manager.get_debug_text()
+	if combat_manager != null and queue_label != null and combat_manager.has_method("get_queue_text"):
+		queue_label.text = combat_manager.get_queue_text()
 
 func bind(player: Node, enemy: Node, deck_manager: Node, manager: Node) -> void:
 	combat_manager = manager
@@ -124,10 +128,18 @@ func _remove_space_from_ui_accept() -> void:
 func _build_debug_label() -> void:
 	debug_label = Label.new()
 	debug_label.position = Vector2(24, 140)
-	debug_label.size = Vector2(360, 150)
-	debug_label.text = "Distance: 0\nEnemy intent: None\nEnemy remaining startup: 0\nLast player startup: 0\nEnemy vulnerable frames: 0\nMode: Neutral"
-	debug_label.add_theme_font_size_override("font_size", 16)
+	debug_label.size = Vector2(500, 320)
+	debug_label.text = "Distance: 0\nEnemy intent: None\nEnemy base startup: 0\nEnemy effective startup: 0\nEnemy remaining startup: 0\nLast player startup: 0\nEnemy vulnerable frames: 0\nInitiative Offset: +0\nStance State: NORMAL\nStance Recovery Frames: 0\nStance Break Stun Remaining: 0\nStance Protected: false\nQueue: Empty\nMode: Neutral"
+	debug_label.add_theme_font_size_override("font_size", 13)
 	root.add_child(debug_label)
+
+func _build_queue_label() -> void:
+	queue_label = Label.new()
+	queue_label.position = Vector2(24, 560)
+	queue_label.size = Vector2(760, 32)
+	queue_label.text = "Queue: Empty"
+	queue_label.add_theme_font_size_override("font_size", 18)
+	root.add_child(queue_label)
 
 func _on_card_pressed(index: int) -> void:
 	_try_play_card(index)

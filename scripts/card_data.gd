@@ -4,6 +4,7 @@ extends Resource
 enum Target { ENEMY, SELF }
 
 @export var id := ""
+@export var instance_id := 0
 @export var display_name := ""
 @export var tag := ""
 @export var tags: Array[String] = []
