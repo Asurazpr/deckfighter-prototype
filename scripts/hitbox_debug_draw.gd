@@ -1,7 +1,7 @@
 class_name HitboxDebugDraw
 extends Node2D
 
-var combat_manager: CombatManager
+var combat_manager: Node
 
 func _process(_delta: float) -> void:
 	queue_redraw()

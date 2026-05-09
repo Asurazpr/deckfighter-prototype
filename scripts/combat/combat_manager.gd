@@ -1,4 +1,4 @@
-class_name CombatManager
+class_name CombatManagerCore
 extends Node
 
 signal frame_advantage_changed(value: int)
@@ -9,6 +9,14 @@ const PLAYER_CHOICE_TIME_SCALE := 0.2
 const ENEMY_INTENT_TIME_SCALE := 0.15
 const PERFECT_BLOCK_HITSTOP := 0.12
 const HitboxDebugDrawScript := preload("res://scripts/hitbox_debug_draw.gd")
+const CombatClockScript := preload("res://scripts/combat/combat_clock.gd")
+const FrameSystemScript := preload("res://scripts/combat/frame_system.gd")
+const QueueResolverScript := preload("res://scripts/combat/queue_resolver.gd")
+const RouteSystemScript := preload("res://scripts/combat/route_system.gd")
+const MovementSystemScript := preload("res://scripts/combat/movement_system.gd")
+const HitboxSystemScript := preload("res://scripts/combat/hitbox_system.gd")
+const TradeSystemScript := preload("res://scripts/combat/trade_system.gd")
+const StanceSystemScript := preload("res://scripts/combat/stance_system.gd")
 const DEBUG_ATTACK_HITBOX_LIFETIME := 0.25
 
 @export var starting_frame_advantage := 0
@@ -43,10 +51,14 @@ var last_player_attack_hitbox := Rect2()
 var last_enemy_attack_hitbox := Rect2()
 var player_attack_hitbox_lifetime := 0.0
 var enemy_attack_hitbox_lifetime := 0.0
-var repeated_card_uses: Dictionary = {}
-var tactical_action_queue: Array[Dictionary] = []
-var resolving_action_queue := false
-var queue_interrupted_by_trade := false
+var combat_clock
+var frame_system
+var queue_resolver
+var route_system
+var movement_system
+var hitbox_system
+var trade_system
+var stance_system
 
 @onready var player = $"../Player"
 @onready var enemy = $"../Enemy"
@@ -56,6 +68,7 @@ func _ready() -> void:
 	frame_advantage = starting_frame_advantage
 	enemy.punish_startup = enemy_punish_startup
 	enemy.punish_range = enemy_punish_range
+	_setup_combat_systems()
 	_create_hitbox_debug_drawer()
 	player.defense_performed.connect(_on_player_defense)
 	enemy.break_started.connect(_on_enemy_break_started)
@@ -63,6 +76,24 @@ func _ready() -> void:
 	deck_manager.follow_up_drawn.connect(_on_follow_up_drawn)
 	deck_manager.follow_up_skipped.connect(_on_follow_up_skipped)
 	call_deferred("_begin_combat")
+
+func _setup_combat_systems() -> void:
+	combat_clock = CombatClockScript.new()
+	combat_clock.setup(self, enemy)
+	frame_system = FrameSystemScript.new()
+	frame_system.setup(self, enemy)
+	queue_resolver = QueueResolverScript.new()
+	queue_resolver.setup(self, deck_manager, max_queue_size)
+	route_system = RouteSystemScript.new()
+	route_system.setup(self, deck_manager)
+	movement_system = MovementSystemScript.new()
+	movement_system.setup(self, player, enemy, max_duel_distance, min_duel_distance)
+	hitbox_system = HitboxSystemScript.new()
+	hitbox_system.setup(self, player, enemy, movement_system)
+	trade_system = TradeSystemScript.new()
+	trade_system.setup(self, trade_player_recovery_frames, trade_enemy_recovery_frames)
+	stance_system = StanceSystemScript.new()
+	stance_system.setup(enemy)
 
 func _begin_combat() -> void:
 	deck_manager.start_combat()
@@ -92,10 +123,10 @@ func get_debug_text() -> String:
 		last_player_action_startup,
 		enemy_vulnerable_frames_remaining,
 		_signed_int(initiative_offset),
-		enemy.get_stance_state_name() if enemy.has_method("get_stance_state_name") else "UNKNOWN",
-		int(enemy.get("stance_recovery_frames_remaining")),
-		int(enemy.get("stance_break_stun_frames_remaining")) if enemy.get("stance_break_stun_frames_remaining") != null else 0,
-		str(enemy.is_stance_protected() if enemy.has_method("is_stance_protected") else false),
+		stance_system.state_name(),
+		stance_system.recovery_frames(),
+		stance_system.break_stun_frames(),
+		str(stance_system.protected()),
 		get_queue_text(),
 		_current_mode()
 	]
@@ -120,7 +151,7 @@ func get_card_prediction(index: int) -> String:
 	return "normal"
 
 func play_card(index: int) -> void:
-	if _is_tactical_mode() and not resolving_action_queue:
+	if _is_tactical_mode() and not queue_resolver.resolving:
 		_queue_tactical_action(_make_card_queue_action(index))
 		return
 
@@ -162,7 +193,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			return
 		if key_event.keycode == KEY_U:
 			get_viewport().set_input_as_handled()
-			if tactical_action_queue.is_empty():
+			if queue_resolver.is_empty():
 				_execute_or_wait_tactical_queue()
 			return
 
@@ -196,12 +227,12 @@ func _run_enemy_attack() -> void:
 	attack_in_progress = true
 	waiting_for_defense = true
 	last_defense = ""
-	tactical_action_queue.clear()
+	queue_resolver.clear()
 	_reset_pressure_sequence()
 	enemy.start_attack()
 	current_enemy_intent = enemy.current_attack
 	enemy_base_startup_frame = int(Enemy.ATTACKS[current_enemy_intent]["startup_frame"])
-	enemy_effective_startup_frame = maxi(1, enemy_base_startup_frame + initiative_offset)
+	enemy_effective_startup_frame = frame_system.effective_startup(enemy_base_startup_frame, initiative_offset)
 	if initiative_offset != 0:
 		log_message.emit("Enemy next startup modified by %s." % _signed_int(initiative_offset))
 	initiative_offset = 0
@@ -394,7 +425,7 @@ func end_player_pressure(reason: String, initiative_result := 0) -> void:
 		log_message.emit("Enemy next startup modified by %d." % initiative_result)
 	frame_advantage = 0
 	enemy_vulnerable_frames_remaining = 0
-	tactical_action_queue.clear()
+	queue_resolver.clear()
 	waiting_for_defense = false
 	attack_in_progress = false
 	current_enemy_intent = ""
@@ -625,12 +656,13 @@ func _resolve_enemy_counter_hit(counter_hit := true) -> void:
 	_schedule_enemy_if_needed()
 
 func _apply_trade_frame_result(card: Resource) -> void:
-	queue_interrupted_by_trade = true
-	tactical_action_queue.clear()
-	var player_recovery := trade_player_recovery_frames + maxi(0, int(card.startup_frame) - 8)
-	var enemy_recovery := trade_enemy_recovery_frames
-	var post_trade_frame_advantage := enemy_recovery - player_recovery
-	advance_combat_frames(maxi(player_recovery, enemy_recovery))
+	queue_resolver.interrupted_by_trade = true
+	queue_resolver.clear()
+	var trade_result: Dictionary = trade_system.resolve_post_trade(card)
+	var player_recovery := int(trade_result["player_recovery"])
+	var enemy_recovery := int(trade_result["enemy_recovery"])
+	var post_trade_frame_advantage := int(trade_result["post_trade_frame_advantage"])
+	advance_combat_frames(int(trade_result["total_recovery"]))
 	log_message.emit("Trade recovery: player %df, enemy %df." % [player_recovery, enemy_recovery])
 	log_message.emit("Post-trade frame advantage: %d." % post_trade_frame_advantage)
 	if post_trade_frame_advantage > 0:
@@ -767,33 +799,11 @@ func _resolve_player_card(card: Resource, bonus_frame_advantage := 0, apply_move
 	_resolve_card_frame_advantage(frame_delta)
 
 func _repeated_card_decay(card: Resource) -> Dictionary:
-	var previous_count := int(repeated_card_uses.get(card.id, 0))
-	var use_count := previous_count + 1
-	repeated_card_uses[card.id] = use_count
-	var penalty := 0
-	var suppress_follow_up := false
-	var force_end := false
-	if use_count == 2:
-		penalty = -3
-	elif use_count == 3:
-		penalty = -6
-		suppress_follow_up = true
-	elif use_count >= 4:
-		penalty = -12
-		suppress_follow_up = true
-		force_end = true
-	if penalty < 0:
-		log_message.emit("Repeated move decay applied.")
-	return {
-		"penalty": penalty,
-		"use_count": use_count,
-		"suppress_follow_up": suppress_follow_up,
-		"force_end": force_end
-	}
+	return route_system.repeated_card_decay(card)
 
 func _resolve_card_frame_advantage(delta: int) -> void:
 	var previous := frame_advantage
-	var final_frame_advantage := clampi(frame_advantage + delta, -12, 6)
+	var final_frame_advantage: int = frame_system.apply_advantage_delta(delta, frame_advantage)
 	frame_advantage = final_frame_advantage
 	enemy_vulnerable_frames_remaining = maxi(0, frame_advantage)
 	frame_advantage_changed.emit(frame_advantage)
@@ -843,9 +853,8 @@ func _resolve_negative_pressure(final_frame_advantage: int) -> void:
 func _enemy_can_punish(final_frame_advantage: int) -> bool:
 	if _is_enemy_broken() or not enemy.can_act():
 		return false
-	var punish_window: int = absi(final_frame_advantage) + int(enemy.punish_startup)
 	_set_enemy_attack_hitbox(_make_punish_hitbox())
-	return punish_window >= punish_threshold and last_enemy_attack_hitbox.intersects(get_player_hurtbox())
+	return frame_system.enemy_can_punish(final_frame_advantage, punish_threshold, last_enemy_attack_hitbox, get_player_hurtbox())
 
 func _predict_enemy_intent_card_outcome(card: Resource) -> String:
 	var card_startup := int(card.startup_frame)
@@ -873,85 +882,49 @@ func _predict_pressure_card_outcome(index: int, card: Resource) -> String:
 	return "trade"
 
 func _distance_between_fighters() -> float:
-	return absf(player.global_position.x - enemy.global_position.x)
+	return movement_system.distance_between_fighters()
 
 func _signed_int(value: int) -> String:
-	return "+%d" % value if value >= 0 else "%d" % value
+	return frame_system.signed_int(value)
 
 func get_player_hurtbox() -> Rect2:
-	var size := Vector2(player.hurtbox_width, player.hurtbox_height)
-	return Rect2(Vector2(player.global_position.x - size.x * 0.5, player.global_position.y - size.y), size)
+	return hitbox_system.player_hurtbox()
 
 func get_enemy_hurtbox() -> Rect2:
-	var size := Vector2(enemy.hurtbox_width, enemy.hurtbox_height)
-	return Rect2(Vector2(enemy.global_position.x - size.x * 0.5, enemy.global_position.y - size.y), size)
+	return hitbox_system.enemy_hurtbox()
 
 func _make_card_hitbox(card: Resource) -> Rect2:
-	return _make_card_hitbox_at(card, player.global_position)
+	return hitbox_system.card_hitbox(card)
 
 func _make_card_hitbox_at(card: Resource, origin: Vector2) -> Rect2:
-	if card.hitbox_width <= 0.0 or card.hitbox_height <= 0.0:
-		return Rect2()
-	var direction_to_enemy := _direction_to_enemy()
-	var size := Vector2(card.hitbox_width, card.hitbox_height)
-	var center: Vector2 = origin + Vector2(card.hitbox_offset_x * direction_to_enemy, card.hitbox_offset_y)
-	return Rect2(center - size * 0.5, size)
+	return hitbox_system.card_hitbox_at(card, origin)
 
 func _make_enemy_attack_hitbox(attack_data: Dictionary) -> Rect2:
-	var width := float(attack_data.get("hitbox_width", 0.0))
-	var height := float(attack_data.get("hitbox_height", 0.0))
-	if width <= 0.0 or height <= 0.0:
-		return Rect2()
-	var direction_to_player := _direction_to_player()
-	var size := Vector2(width, height)
-	var center: Vector2 = enemy.global_position + Vector2(width * 0.5 * direction_to_player, float(attack_data.get("hitbox_offset_y", -40.0)))
-	return Rect2(center - size * 0.5, size)
+	return hitbox_system.enemy_attack_hitbox(attack_data)
 
 func _make_punish_hitbox() -> Rect2:
-	var direction_to_player := _direction_to_player()
-	var size := Vector2(120.0, 60.0)
-	var center: Vector2 = enemy.global_position + Vector2(60.0 * direction_to_player, -40.0)
-	return Rect2(center - size * 0.5, size)
+	return hitbox_system.punish_hitbox()
 
 func _card_needs_hitbox(card: Resource) -> bool:
-	return card.hitbox_width > 0.0 and card.hitbox_height > 0.0
+	return hitbox_system.card_needs_hitbox(card)
 
 func _card_hitbox_hits_enemy(card: Resource) -> bool:
-	if not _card_needs_hitbox(card):
-		return true
-	return _make_card_hitbox(card).intersects(get_enemy_hurtbox())
+	return hitbox_system.card_hitbox_hits_enemy(card)
 
 func _card_would_hit_enemy_after_movement(card: Resource) -> bool:
-	if not _card_needs_hitbox(card):
-		return true
-	var predicted_position: Vector2 = player.global_position
-	predicted_position.x += card.movement_delta * _direction_to_enemy()
-	predicted_position.x = _clamped_player_x(predicted_position.x)
-	return _make_card_hitbox_at(card, predicted_position).intersects(get_enemy_hurtbox())
+	return hitbox_system.card_would_hit_enemy_after_movement(card)
 
 func _set_player_attack_hitbox(hitbox: Rect2) -> void:
-	last_player_attack_hitbox = hitbox
-	player_attack_hitbox_lifetime = DEBUG_ATTACK_HITBOX_LIFETIME if hitbox.size != Vector2.ZERO else 0.0
+	hitbox_system.set_player_attack_hitbox(hitbox)
 
 func _set_enemy_attack_hitbox(hitbox: Rect2) -> void:
-	last_enemy_attack_hitbox = hitbox
-	enemy_attack_hitbox_lifetime = DEBUG_ATTACK_HITBOX_LIFETIME if hitbox.size != Vector2.ZERO else 0.0
+	hitbox_system.set_enemy_attack_hitbox(hitbox)
 
 func _clear_attack_hitboxes() -> void:
-	last_player_attack_hitbox = Rect2()
-	last_enemy_attack_hitbox = Rect2()
-	player_attack_hitbox_lifetime = 0.0
-	enemy_attack_hitbox_lifetime = 0.0
+	hitbox_system.clear_attack_hitboxes()
 
 func _tick_debug_hitboxes(delta: float) -> void:
-	if player_attack_hitbox_lifetime > 0.0:
-		player_attack_hitbox_lifetime -= delta / Engine.time_scale
-		if player_attack_hitbox_lifetime <= 0.0:
-			last_player_attack_hitbox = Rect2()
-	if enemy_attack_hitbox_lifetime > 0.0:
-		enemy_attack_hitbox_lifetime -= delta / Engine.time_scale
-		if enemy_attack_hitbox_lifetime <= 0.0:
-			last_enemy_attack_hitbox = Rect2()
+	hitbox_system.tick_debug_hitboxes(delta)
 
 func _create_hitbox_debug_drawer() -> void:
 	var debug_drawer := HitboxDebugDrawScript.new()
@@ -959,47 +932,13 @@ func _create_hitbox_debug_drawer() -> void:
 	get_parent().call_deferred("add_child", debug_drawer)
 
 func _clamp_duel_distance() -> void:
-	var direction_to_enemy := _direction_to_enemy()
-	if direction_to_enemy == 0.0:
-		direction_to_enemy = 1.0
-	var distance := _distance_between_fighters()
-	if distance > max_duel_distance:
-		player.global_position.x = enemy.global_position.x - max_duel_distance * direction_to_enemy
-	elif distance < min_duel_distance:
-		player.global_position.x = enemy.global_position.x - min_duel_distance * direction_to_enemy
+	movement_system.clamp_duel_distance()
 
 func _clamped_player_x(player_x: float) -> float:
-	var direction_to_enemy := signf(enemy.global_position.x - player_x)
-	if direction_to_enemy == 0.0:
-		direction_to_enemy = 1.0
-	var distance := absf(player_x - enemy.global_position.x)
-	if distance > max_duel_distance:
-		return enemy.global_position.x - max_duel_distance * direction_to_enemy
-	if distance < min_duel_distance:
-		return enemy.global_position.x - min_duel_distance * direction_to_enemy
-	return player_x
+	return movement_system.clamped_player_x(player_x)
 
 func _apply_intent_action_movement(action: String) -> void:
-	match action:
-		"step_back":
-			_move_player_away_from_enemy(35.0)
-		"step_forward":
-			_move_player_toward_enemy(35.0)
-		"backstep":
-			_move_player_away_from_enemy(80.0)
-		"jump":
-			_apply_jump_in_movement()
-		"jump_forward":
-			player.global_position.y -= 45.0
-			_move_player_toward_enemy(55.0)
-			log_message.emit("Player jumped forward.")
-		"jump_back":
-			player.global_position.y -= 45.0
-			_move_player_away_from_enemy(55.0)
-			log_message.emit("Player jumped back.")
-		"neutral_jump":
-			player.global_position.y -= 45.0
-			log_message.emit("Player neutral jumped.")
+	movement_system.apply_intent_action_movement(action)
 
 func _apply_pressure_movement(action: String) -> void:
 	var cost := _action_startup(action)
@@ -1010,35 +949,13 @@ func _apply_pressure_movement(action: String) -> void:
 	_spend_pressure_frames(cost)
 
 func _action_startup(action: String) -> int:
-	match action:
-		"block":
-			return 4
-		"crouch_block":
-			return 5
-		"jump", "jump_forward", "jump_back", "neutral_jump":
-			return 4
-		"backstep":
-			return 5
-		"step_back", "step_forward":
-			return 2
-		"wait":
-			return 1
-		_:
-			return 0
+	return movement_system.action_startup(action)
 
 func _advance_enemy_startup(cost: int) -> void:
 	advance_combat_frames(cost, true, false)
 
 func advance_combat_frames(frames: int, tick_enemy_startup := false, tick_enemy_vulnerability := true) -> void:
-	if frames <= 0:
-		return
-	if enemy.has_method("advance_stance_recovery_frames"):
-		enemy.advance_stance_recovery_frames(frames)
-	if tick_enemy_startup:
-		remaining_startup_frames -= frames
-	if tick_enemy_vulnerability:
-		enemy_vulnerable_frames_remaining = maxi(0, enemy_vulnerable_frames_remaining - frames)
-	frame_advantage_changed.emit(frame_advantage)
+	combat_clock.advance_combat_frames(frames, tick_enemy_startup, tick_enemy_vulnerability)
 
 func _spend_pressure_frames(cost: int) -> void:
 	if cost <= 0:
@@ -1069,41 +986,25 @@ func _is_jump_action(action: String) -> bool:
 	return action == "jump" or action == "jump_forward" or action == "jump_back" or action == "neutral_jump"
 
 func _apply_jump_in_movement() -> void:
-	player.global_position.y -= 45.0
-	if Input.is_key_pressed(KEY_D):
-		_move_player_toward_enemy(55.0)
-		log_message.emit("Player jumped forward.")
-	elif Input.is_key_pressed(KEY_A):
-		_move_player_away_from_enemy(55.0)
-		log_message.emit("Player jumped back.")
-	else:
-		log_message.emit("Player neutral jumped.")
+	movement_system.apply_jump_in_movement()
 
 func _move_player_by_card(card: Resource) -> void:
-	if card.movement_delta == 0.0:
-		return
-	player.global_position.x += card.movement_delta * _direction_to_enemy()
+	movement_system.move_player_by_card(card)
 
 func _move_player_toward_enemy(amount: float) -> void:
-	player.global_position.x += amount * _direction_to_enemy()
+	movement_system.move_player_toward_enemy(amount)
 
 func _move_player_away_from_enemy(amount: float) -> void:
-	player.global_position.x -= amount * _direction_to_enemy()
+	movement_system.move_player_away_from_enemy(amount)
 
 func _direction_to_enemy() -> float:
-	var direction := signf(enemy.global_position.x - player.global_position.x)
-	return 1.0 if direction == 0.0 else direction
+	return movement_system.direction_to_enemy()
 
 func _direction_to_player() -> float:
-	var direction := signf(player.global_position.x - enemy.global_position.x)
-	return -1.0 if direction == 0.0 else direction
+	return movement_system.direction_to_player()
 
 func _apply_card_spacing(card: Resource) -> void:
-	match card.id:
-		"reset_step":
-			pass
-		"ground_smash":
-			enemy.global_position.x += 180.0 * _direction_to_enemy()
+	movement_system.apply_card_spacing(card)
 
 func _check_combo_route_drying_out() -> void:
 	if can_play_cards() and not _has_valid_card_for_current_state():
@@ -1130,85 +1031,36 @@ func _on_enemy_break_ended() -> void:
 	_update_time_scale()
 
 func _is_enemy_broken() -> bool:
-	return enemy.state == Enemy.State.BREAK
+	return stance_system.is_broken()
 
 func _enemy_break_frames_remaining() -> int:
-	if not _is_enemy_broken():
-		return 0
-	return int(enemy.get("stance_recovery_frames_remaining"))
+	return stance_system.recovery_frames() if _is_enemy_broken() else 0
 
 func _has_valid_card_for_current_state() -> bool:
-	return deck_manager.has_break_playable_card() if _is_enemy_broken() else deck_manager.has_valid_playable_card()
+	return route_system.has_valid_card(_is_enemy_broken())
 
 func _reset_pressure_sequence() -> void:
-	deck_manager.reset_combo_route()
-	repeated_card_uses.clear()
+	route_system.reset_pressure_sequence()
 	_clear_attack_hitboxes()
 
 func _card_has_tag(card: Resource, tag_name: String) -> bool:
-	return card.tags.has(tag_name)
+	return route_system.card_has_tag(card, tag_name)
 
 func _make_card_queue_action(index: int) -> Dictionary:
-	if index < 0 or index >= deck_manager.hand.size():
-		return {}
-	var card: Resource = deck_manager.hand[index]
-	var route_valid: bool = deck_manager.is_card_route_valid(index, _is_enemy_broken())
-	var starts_new_route: bool = not route_valid and _card_has_tag(card, "starter")
-	return {
-		"type": "CARD",
-		"queued_index": index,
-		"instance_id": card.instance_id,
-		"card_instance_id": card.instance_id,
-		"original_id": card.id,
-		"original_display_name": card.display_name,
-		"id": card.id,
-		"display_name": card.display_name,
-		"tag": card.tag,
-		"description": card.description,
-		"damage": card.damage,
-		"stance_damage": card.stance_damage,
-		"frame_cost": card.frame_cost,
-		"frame_gain": card.frame_gain,
-		"startup_frame": card.startup_frame,
-		"range": card.range,
-		"movement_delta": card.movement_delta,
-		"whiff_frame_penalty": card.whiff_frame_penalty,
-		"hitbox_width": card.hitbox_width,
-		"hitbox_height": card.hitbox_height,
-		"hitbox_offset_x": card.hitbox_offset_x,
-		"hitbox_offset_y": card.hitbox_offset_y,
-		"tags": card.tags.duplicate(),
-		"allowed_follow_up_card_ids": card.allowed_follow_up_card_ids.duplicate(),
-		"route_valid_at_queue": route_valid,
-		"starts_new_route_at_queue": starts_new_route
-	}
+	return queue_resolver.card_snapshot(index, _is_enemy_broken())
 
 func _card_from_snapshot(snapshot: Dictionary) -> Resource:
 	return deck_manager.call("_card_from_snapshot", snapshot) as Resource
 
 func _snapshot_debug_text(snapshot: Dictionary) -> String:
-	return "%s(%s #%d) start %df dmg %d st %d hit +%d whiff %d route %s tags %s" % [
-		snapshot.get("display_name", "Card"),
-		snapshot.get("id", ""),
-		int(snapshot.get("card_instance_id", snapshot.get("instance_id", 0))),
-		int(snapshot.get("startup_frame", 0)),
-		int(snapshot.get("damage", 0)),
-		int(snapshot.get("stance_damage", 0)),
-		int(snapshot.get("frame_gain", 0)),
-		int(snapshot.get("whiff_frame_penalty", 0)),
-		", ".join(snapshot.get("allowed_follow_up_card_ids", []) as Array),
-		", ".join(snapshot.get("tags", []) as Array)
-	]
+	return queue_resolver.snapshot_debug_text(snapshot)
 
 func _warn_if_snapshot_changed(snapshot: Dictionary) -> void:
-	if snapshot.get("id", "") != snapshot.get("original_id", "") or snapshot.get("display_name", "") != snapshot.get("original_display_name", ""):
+	if queue_resolver.warning_if_snapshot_changed(snapshot):
 		log_message.emit("Warning: queued action changed name/id after being queued.")
 
 func _is_card_instance_queued(card: Resource) -> bool:
-	for action in tactical_action_queue:
-		if action.get("type", "") == "CARD" and int(action.get("instance_id", 0)) == card.instance_id:
-			return true
-	return false
+	return queue_resolver.is_card_instance_queued(card)
 
 func _on_follow_up_drawn(card_name: String) -> void:
 	log_message.emit("Follow-up card drawn: %s." % card_name)
@@ -1219,7 +1071,7 @@ func _on_follow_up_skipped(message: String) -> void:
 	log_message.emit("Queue contents after follow-up draw: %s." % get_queue_text())
 
 func _log_stance_protection(amount: int) -> void:
-	if amount > 0 and enemy.has_method("is_stance_protected") and enemy.is_stance_protected():
+	if amount > 0 and stance_system.protected():
 		log_message.emit("Stance protected: ignored %d stance damage" % amount)
 
 func _is_interrupt_card_index(index: int) -> bool:
@@ -1242,28 +1094,14 @@ func _current_mode() -> String:
 	return "Neutral"
 
 func get_queue_text() -> String:
-	if tactical_action_queue.is_empty():
-		return "Queue: Empty"
-	var names: Array[String] = []
-	for action in tactical_action_queue:
-		names.append(_queued_action_display_name(action))
-	return "Queue: %s" % " -> ".join(names)
+	return queue_resolver.queue_text()
 
 func _is_tactical_mode() -> bool:
 	return not combat_over and (waiting_for_defense or _can_take_pressure_movement())
 
 func _queue_tactical_action(action: Dictionary) -> void:
-	if action.is_empty():
+	if not queue_resolver.append(action):
 		return
-	if tactical_action_queue.size() >= max_queue_size:
-		log_message.emit("Action queue full.")
-		return
-	if action.get("type", "") == "CARD":
-		for queued_action in tactical_action_queue:
-			if queued_action.get("type", "") == "CARD" and int(queued_action.get("instance_id", 0)) == int(action.get("instance_id", -1)):
-				log_message.emit("Card already queued: %s #%d." % [action.get("display_name", "Card"), int(action.get("instance_id", 0))])
-				return
-	tactical_action_queue.append(action)
 	log_message.emit("Queued: %s." % _queued_action_display_name(action))
 	if action.get("type", "") == "CARD":
 		log_message.emit("Card queued: %s #%d." % [action.get("display_name", "Unknown"), int(action.get("instance_id", 0))])
@@ -1271,45 +1109,45 @@ func _queue_tactical_action(action: Dictionary) -> void:
 	frame_advantage_changed.emit(frame_advantage)
 
 func _pop_tactical_action() -> void:
-	if tactical_action_queue.is_empty():
+	if queue_resolver.is_empty():
 		return
-	var action: Dictionary = tactical_action_queue.pop_back()
+	var action: Dictionary = queue_resolver.pop_back()
 	log_message.emit("Removed queued action: %s." % _queued_action_display_name(action))
 	frame_advantage_changed.emit(frame_advantage)
 
 func _clear_tactical_queue() -> void:
-	if tactical_action_queue.is_empty():
+	if queue_resolver.is_empty():
 		return
-	tactical_action_queue.clear()
+	queue_resolver.clear()
 	log_message.emit("Action queue cleared.")
 	frame_advantage_changed.emit(frame_advantage)
 
 func _execute_or_wait_tactical_queue() -> void:
-	if resolving_action_queue:
+	if queue_resolver.resolving:
 		return
-	resolving_action_queue = true
-	queue_interrupted_by_trade = false
-	if tactical_action_queue.is_empty():
+	queue_resolver.resolving = true
+	queue_resolver.interrupted_by_trade = false
+	if queue_resolver.is_empty():
 		log_message.emit("Player waited.")
 		if waiting_for_defense:
 			await _resolve_enemy_intent("wait")
 		elif _can_take_pressure_movement():
 			_spend_pressure_frames(1)
-		resolving_action_queue = false
+		queue_resolver.resolving = false
 		return
 
-	while not tactical_action_queue.is_empty() and _is_tactical_mode():
-		var action: Dictionary = tactical_action_queue.pop_front()
+	while not queue_resolver.is_empty() and _is_tactical_mode():
+		var action: Dictionary = queue_resolver.pop_front()
 		await _resolve_queued_action(action)
 		frame_advantage_changed.emit(frame_advantage)
-		if queue_interrupted_by_trade:
+		if queue_resolver.interrupted_by_trade:
 			log_message.emit("Queue stopped after trade.")
-			tactical_action_queue.clear()
+			queue_resolver.clear()
 			break
 		await _pause_between_queued_actions()
-	resolving_action_queue = false
+	queue_resolver.resolving = false
 	if not _is_tactical_mode():
-		tactical_action_queue.clear()
+		queue_resolver.clear()
 
 func _resolve_queued_action(action: Dictionary) -> void:
 	if action.get("type", "") == "CARD":
@@ -1331,7 +1169,7 @@ func _resolve_queued_action(action: Dictionary) -> void:
 		_apply_pressure_movement(combat_action)
 
 func _pause_between_queued_actions() -> void:
-	if tactical_action_queue.is_empty():
+	if queue_resolver.is_empty():
 		return
 	await get_tree().create_timer(0.2, true, false, true).timeout
 	_clear_attack_hitboxes()
@@ -1379,27 +1217,7 @@ func _combat_action_from_queued_action(action: String) -> String:
 			return ""
 
 func _queued_action_display_name(action: Dictionary) -> String:
-	if action.get("type", "") == "CARD":
-		return String(action.get("display_name", "Card"))
-	match String(action.get("type", "")):
-		"STEP_FORWARD":
-			return "Step Forward"
-		"STEP_BACK":
-			return "Step Back"
-		"JUMP_FORWARD":
-			return "Jump Forward"
-		"JUMP_BACK":
-			return "Jump Back"
-		"NEUTRAL_JUMP":
-			return "Neutral Jump"
-		"BACKSTEP":
-			return "Backstep"
-		"BLOCK":
-			return "Block"
-		"CROUCH_BLOCK":
-			return "Crouch Block"
-		_:
-			return String(action.get("type", "")).capitalize()
+	return queue_resolver.queued_action_display_name(action)
 
 func _can_take_pressure_movement() -> bool:
 	return not combat_over and not waiting_for_defense and not attack_in_progress and (frame_advantage > 0 or _enemy_break_frames_remaining() > 0)
@@ -1452,7 +1270,7 @@ func _end_combat(message: String) -> void:
 	remaining_startup_frames = 0
 	initiative_offset = 0
 	enemy_vulnerable_frames_remaining = 0
-	tactical_action_queue.clear()
+	queue_resolver.clear()
 	player.set_input_enabled(true)
 	player.set_free_movement_enabled(true)
 	if enemy.has_method("clear_intent"):
