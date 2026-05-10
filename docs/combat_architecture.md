@@ -18,6 +18,7 @@ Current combat states are represented through the existing mode helpers: enemy i
 - `MovementSystem`: duel spacing, step/backstep/jump movement, movement frame costs, and card spacing effects.
 - `HitboxSystem`: hurtbox and attack hitbox construction, hit prediction, debug hitbox lifetimes, and future active collision-window hooks.
 - `TradeSystem`: trade recovery values and post-trade frame advantage calculation.
+- `EnemyAISystem`: enemy decision state, tier/profile config, situation scoring, spacing checks, punish candidate selection, pressure reactions, boss phase hooks, and enemy intent choice.
 
 ## Data Direction
 
@@ -29,4 +30,7 @@ Animation and timing should consume combat-frame data from the systems. Animatio
 
 - Move stance rules/config out of `enemy.gd` into character kit data.
 - Move card definitions, route tables, generated follow-ups, and repeat-decay tuning out of `DeckManager`/`RouteSystem` into data assets.
+- Move enemy move definitions and AI scoring weights into ruleset/character kit data.
+- Keep `NORMAL`, `ELITE`, and `BOSS` intent profiles data-shaped so they can become modded enemy definitions.
 - Keep debug UI stable while replacing implicit manager booleans with a clearer explicit state enum.
+- Add a real pause/debug inspector, mod/debug console, enemy intent icon display, stance break countdown visual near the enemy, and frame timeline visualization.

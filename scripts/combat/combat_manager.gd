@@ -17,6 +17,7 @@ const MovementSystemScript := preload("res://scripts/combat/movement_system.gd")
 const HitboxSystemScript := preload("res://scripts/combat/hitbox_system.gd")
 const TradeSystemScript := preload("res://scripts/combat/trade_system.gd")
 const StanceSystemScript := preload("res://scripts/combat/stance_system.gd")
+const EnemyAISystemScript := preload("res://scripts/combat/enemy_ai_system.gd")
 const DEBUG_ATTACK_HITBOX_LIFETIME := 0.25
 
 @export var starting_frame_advantage := 0
@@ -59,6 +60,7 @@ var movement_system
 var hitbox_system
 var trade_system
 var stance_system
+var enemy_ai_system
 
 @onready var player = $"../Player"
 @onready var enemy = $"../Enemy"
@@ -94,6 +96,8 @@ func _setup_combat_systems() -> void:
 	trade_system.setup(self, trade_player_recovery_frames, trade_enemy_recovery_frames)
 	stance_system = StanceSystemScript.new()
 	stance_system.setup(enemy)
+	enemy_ai_system = EnemyAISystemScript.new()
+	enemy_ai_system.setup(self, enemy, frame_system)
 
 func _begin_combat() -> void:
 	deck_manager.start_combat()
@@ -107,7 +111,7 @@ func _log_architecture_validation() -> void:
 	var active_path: String = get_script().resource_path
 	var legacy_present := ResourceLoader.exists("res://scripts/combat_manager.gd")
 	log_message.emit("Active combat manager: %s (CombatManagerCore)." % active_path)
-	log_message.emit("Loaded combat systems: CombatClock, FrameSystem, QueueResolver, RouteSystem, MovementSystem, HitboxSystem, TradeSystem, StanceSystem.")
+	log_message.emit("Loaded combat systems: CombatClock, FrameSystem, QueueResolver, RouteSystem, MovementSystem, HitboxSystem, TradeSystem, StanceSystem, EnemyAISystem.")
 	log_message.emit("Legacy combat manager present: %s." % str(legacy_present))
 
 func _process(_delta: float) -> void:
@@ -122,7 +126,7 @@ func _process(_delta: float) -> void:
 		_end_combat("Enemy defeated.")
 
 func get_debug_text() -> String:
-	return "Distance: %.0f\nEnemy intent: %s\nEnemy base startup: %d\nEnemy effective startup: %d\nEnemy remaining startup: %d\nLast player startup: %d\nEnemy vulnerable frames: %d\nInitiative Offset: %s\nStance State: %s\nStance Recovery Frames: %d\nStance Break Stun Remaining: %d\nStance Protected: %s\n%s\nMode: %s" % [
+	return "Distance: %.0f\nEnemy intent: %s\nEnemy base startup: %d\nEnemy effective startup: %d\nEnemy remaining startup: %d\nLast player startup: %d\nEnemy vulnerable frames: %d\nInitiative Offset: %s\nStance State: %s\nStance Recovery Frames: %d\nStance Break Stun Remaining: %d\nStance Protected: %s\n%s\n%s\nMode: %s" % [
 		_distance_between_fighters(),
 		current_enemy_intent if current_enemy_intent != "" else "None",
 		enemy_base_startup_frame,
@@ -136,8 +140,33 @@ func get_debug_text() -> String:
 		stance_system.break_stun_frames(),
 		str(stance_system.protected()),
 		get_queue_text(),
+		enemy_ai_system.debug_text(),
 		_current_mode()
 	]
+
+func get_main_hud_debug_text() -> String:
+	return "Distance: %.0f\nMode: %s\n%s" % [
+		_distance_between_fighters(),
+		_current_mode(),
+		get_queue_text()
+	]
+
+func get_timing_debug_text() -> String:
+	return "Enemy base startup: %d\nEnemy effective startup: %d\nEnemy remaining startup: %d\nLast player startup: %d\nEnemy vulnerable frames: %d\nInitiative Offset: %s\nStance State: %s\nStance Recovery Frames: %d\nStance Break Stun Remaining: %d\nStance Protected: %s" % [
+		enemy_base_startup_frame,
+		enemy_effective_startup_frame,
+		remaining_startup_frames,
+		last_player_action_startup,
+		enemy_vulnerable_frames_remaining,
+		_signed_int(initiative_offset),
+		stance_system.state_name(),
+		stance_system.recovery_frames(),
+		stance_system.break_stun_frames(),
+		str(stance_system.protected())
+	]
+
+func get_enemy_ai_debug_text() -> String:
+	return enemy_ai_system.debug_text()
 
 func can_play_cards() -> bool:
 	return (waiting_for_defense or ((frame_advantage > 0 or _enemy_break_frames_remaining() > 0) and not attack_in_progress)) and not combat_over
@@ -229,7 +258,15 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		_apply_pressure_movement(pressure_action)
 
 func _run_enemy_attack() -> void:
-	if combat_over or frame_advantage > 0 or attack_in_progress or not enemy.can_act():
+	if combat_over or frame_advantage > 0 or attack_in_progress:
+		return
+
+	var ai_context := _enemy_ai_context(initiative_offset)
+	var ai_decision: Dictionary = enemy_ai_system.choose_intent(ai_context)
+	_log_enemy_ai_decision(ai_decision)
+	if ai_decision.is_empty():
+		if enemy.can_act() and enemy_ai_system.last_state == "DEFENSIVE_REACTION":
+			_enemy_approach_or_wait()
 		return
 
 	attack_in_progress = true
@@ -237,10 +274,10 @@ func _run_enemy_attack() -> void:
 	last_defense = ""
 	queue_resolver.clear()
 	_reset_pressure_sequence()
-	enemy.start_attack()
+	enemy.start_attack(String(ai_decision.get("action_id", "")))
 	current_enemy_intent = enemy.current_attack
 	enemy_base_startup_frame = int(Enemy.ATTACKS[current_enemy_intent]["startup_frame"])
-	enemy_effective_startup_frame = frame_system.effective_startup(enemy_base_startup_frame, initiative_offset)
+	enemy_effective_startup_frame = int(ai_decision.get("effective_startup", frame_system.effective_startup(enemy_base_startup_frame, initiative_offset)))
 	if initiative_offset != 0:
 		log_message.emit("Enemy next startup modified by %s." % _signed_int(initiative_offset))
 	initiative_offset = 0
@@ -252,6 +289,51 @@ func _run_enemy_attack() -> void:
 	log_message.emit("Bullet time: choose defense.")
 	frame_advantage_changed.emit(frame_advantage)
 	_update_time_scale()
+
+func _enemy_ai_context(pending_initiative_offset: int) -> Dictionary:
+	return {
+		"combat_over": combat_over,
+		"distance": _distance_between_fighters(),
+		"initiative_offset": pending_initiative_offset,
+		"player_frame_delta": pending_initiative_offset,
+		"frame_advantage": frame_advantage,
+		"player_has_pressure": frame_advantage > 0,
+		"queue_resolving": queue_resolver.resolving,
+		"stance_state": stance_system.state_name(),
+		"stance_protected": stance_system.protected(),
+		"stance_recovery_frames": stance_system.recovery_frames(),
+		"enemy_in_recovery": attack_in_progress or punish_in_progress,
+		"player_airborne": player.global_position.y < 588.0
+	}
+
+func _pressure_ai_context(extra := {}) -> Dictionary:
+	var context := _enemy_ai_context(initiative_offset)
+	context["player_has_pressure"] = true
+	for key in extra.keys():
+		context[key] = extra[key]
+	return context
+
+func _log_enemy_ai_decision(decision: Dictionary) -> void:
+	log_message.emit("Enemy state: %s." % enemy_ai_system.last_state)
+	if decision.is_empty():
+		log_message.emit("Enemy cannot act: %s." % enemy_ai_system.last_reason)
+		return
+	var punish_candidates: Array = decision.get("punish_candidates", []) as Array
+	log_message.emit("Enemy AI player frame delta: %s." % _signed_int(initiative_offset))
+	log_message.emit("Enemy AI punish candidates: %s." % (", ".join(punish_candidates) if not punish_candidates.is_empty() else "None"))
+	log_message.emit("Enemy chose %s: score %.1f." % [decision.get("action_id", "None"), float(decision.get("score", 0.0))])
+	log_message.emit("Enemy effective startup: %df. Spacing: %s." % [int(decision.get("effective_startup", 0)), decision.get("spacing", "unchecked")])
+	log_message.emit("Enemy AI reason: %s." % decision.get("reason", "No reason."))
+	log_message.emit("Enemy profile: %s phase %s; %s." % [enemy_ai_system.intent_profile.get("tier", "NORMAL"), enemy_ai_system.boss_phase_id, enemy_ai_system.last_profile_modifiers])
+
+func _enemy_approach_or_wait() -> void:
+	if _distance_between_fighters() > 95.0:
+		enemy.global_position.x += 35.0 * _direction_to_player()
+		_clamp_duel_distance()
+		log_message.emit("Enemy pressure: approached due to spacing.")
+	else:
+		log_message.emit("Enemy defensive reaction: waited.")
+	_schedule_enemy_if_needed()
 
 func _resolve_enemy_intent(defense_type: String) -> void:
 	if combat_over or not waiting_for_defense:
@@ -692,6 +774,7 @@ func _resolve_pressure_card(index: int, route_valid: bool, starts_new_route: boo
 	advance_combat_frames(int(preview_card.startup_frame))
 
 	var repeat_info := _repeated_card_decay(preview_card)
+	_log_enemy_pressure_reaction(preview_card, repeat_info)
 	var frame_delta: int = int(preview_card.frame_gain) - int(preview_card.frame_cost) + int(repeat_info["penalty"])
 	_set_player_attack_hitbox(_make_card_hitbox(preview_card))
 	if _card_needs_hitbox(preview_card) and not _card_hitbox_hits_enemy(preview_card):
@@ -737,6 +820,7 @@ func _resolve_pressure_card_snapshot(snapshot: Dictionary) -> void:
 	advance_combat_frames(int(preview_card.startup_frame))
 
 	var repeat_info := _repeated_card_decay(preview_card)
+	_log_enemy_pressure_reaction(preview_card, repeat_info)
 	var frame_delta: int = int(preview_card.frame_gain) - int(preview_card.frame_cost) + int(repeat_info["penalty"])
 	_set_player_attack_hitbox(_make_card_hitbox(preview_card))
 	if _card_needs_hitbox(preview_card) and not _card_hitbox_hits_enemy(preview_card):
@@ -778,6 +862,7 @@ func _resolve_player_card(card: Resource, bonus_frame_advantage := 0, apply_move
 		advance_combat_frames(int(card.startup_frame))
 
 	var repeat_info := _repeated_card_decay(card)
+	_log_enemy_pressure_reaction(card, repeat_info)
 	var frame_delta: int = int(card.frame_gain) - int(card.frame_cost) + bonus_frame_advantage + int(repeat_info["penalty"])
 	_set_player_attack_hitbox(_make_card_hitbox(card))
 	if _card_needs_hitbox(card) and not _card_hitbox_hits_enemy(card):
@@ -806,6 +891,12 @@ func _resolve_player_card(card: Resource, bonus_frame_advantage := 0, apply_move
 
 func _repeated_card_decay(card: Resource) -> Dictionary:
 	return route_system.repeated_card_decay(card)
+
+func _log_enemy_pressure_reaction(card: Resource, repeat_info: Dictionary) -> void:
+	var reaction: Dictionary = enemy_ai_system.evaluate_pressure_reaction(card, _pressure_ai_context({
+		"move_use_count": int(repeat_info.get("use_count", 1))
+	}))
+	log_message.emit("Enemy %s: %s" % [reaction.get("state", "DEFENSIVE_REACTION"), reaction.get("reason", "No reaction.")])
 
 func _resolve_card_frame_advantage(delta: int) -> void:
 	var previous := frame_advantage

@@ -40,6 +40,9 @@ func repeated_card_decay(card: Resource) -> Dictionary:
 		"force_end": force_end
 	}
 
+func move_use_count(card_id: String) -> int:
+	return int(repeated_card_uses.get(card_id, 0))
+
 func card_has_tag(card: Resource, tag_name: String) -> bool:
 	return card.tags.has(tag_name)
 
