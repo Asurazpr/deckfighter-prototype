@@ -3,6 +3,8 @@ extends RefCounted
 
 var enemy: Node
 
+# TODO: Move stance rules/config out of enemy.gd so character kits can define
+# per-character stance health, break stun, block recovery, and protection windows.
 func setup(enemy_ref: Node) -> void:
 	enemy = enemy_ref
 
@@ -15,6 +17,17 @@ func is_broken() -> bool:
 
 func protected() -> bool:
 	return enemy != null and enemy.has_method("is_stance_protected") and enemy.is_stance_protected()
+
+func apply_hit(damage: int, stance_damage: int) -> void:
+	if enemy != null:
+		enemy.take_hit(damage, stance_damage)
+
+func apply_block_stance_damage(amount: int) -> void:
+	if enemy != null and enemy.has_method("add_block_stance_damage"):
+		enemy.add_block_stance_damage(amount)
+
+func should_log_protected_damage(amount: int) -> bool:
+	return amount > 0 and protected()
 
 func state_name() -> String:
 	return enemy.get_stance_state_name() if enemy != null and enemy.has_method("get_stance_state_name") else "UNKNOWN"

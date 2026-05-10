@@ -99,8 +99,16 @@ func _begin_combat() -> void:
 	deck_manager.start_combat()
 	player.set_free_movement_enabled(false)
 	frame_advantage_changed.emit(frame_advantage)
+	_log_architecture_validation()
 	log_message.emit("Duel start. Read the enemy intent.")
 	_schedule_enemy_if_needed()
+
+func _log_architecture_validation() -> void:
+	var active_path: String = get_script().resource_path
+	var legacy_present := ResourceLoader.exists("res://scripts/combat_manager.gd")
+	log_message.emit("Active combat manager: %s (CombatManagerCore)." % active_path)
+	log_message.emit("Loaded combat systems: CombatClock, FrameSystem, QueueResolver, RouteSystem, MovementSystem, HitboxSystem, TradeSystem, StanceSystem.")
+	log_message.emit("Legacy combat manager present: %s." % str(legacy_present))
 
 func _process(_delta: float) -> void:
 	if combat_over:
@@ -343,7 +351,7 @@ func _resolve_block_after_startup(defense_type: String, startup_after_block: int
 			_reset_pressure_sequence()
 			_change_frame_advantage(4)
 			_log_stance_protection(15)
-			enemy.add_block_stance_damage(15)
+			stance_system.apply_block_stance_damage(15)
 			log_message.emit("Perfect block window hit.")
 			log_message.emit("PERFECT BLOCK")
 			log_message.emit("Stance damage dealt: 15.")
@@ -396,9 +404,7 @@ func _defense_answers_attack(defense_type: String, attack_data: Dictionary) -> b
 
 func _change_frame_advantage(delta: int) -> void:
 	var previous := frame_advantage
-	frame_advantage = clampi(frame_advantage + delta, -3, 6)
-	if frame_advantage < 0:
-		frame_advantage = 0
+	frame_advantage = frame_system.apply_tempo_delta(delta, frame_advantage)
 	enemy_vulnerable_frames_remaining = maxi(0, frame_advantage)
 	if frame_advantage == 0:
 		_reset_pressure_sequence()
@@ -580,7 +586,7 @@ func _resolve_intent_trade(index: int, preview_card: Resource, enemy_startup_aft
 	_set_enemy_attack_hitbox(_make_enemy_attack_hitbox(result))
 	player.take_damage(result["damage"])
 	_log_stance_protection(preview_card.stance_damage)
-	enemy.take_hit(preview_card.damage, preview_card.stance_damage)
+	stance_system.apply_hit(preview_card.damage, preview_card.stance_damage)
 	player.set_free_movement_enabled(false)
 	var traded_intent := current_enemy_intent
 	current_enemy_intent = ""
@@ -609,7 +615,7 @@ func _resolve_intent_trade_snapshot(snapshot: Dictionary, preview_card: Resource
 	_set_enemy_attack_hitbox(_make_enemy_attack_hitbox(result))
 	player.take_damage(result["damage"])
 	_log_stance_protection(preview_card.stance_damage)
-	enemy.take_hit(preview_card.damage, preview_card.stance_damage)
+	stance_system.apply_hit(preview_card.damage, preview_card.stance_damage)
 	player.set_free_movement_enabled(false)
 	var traded_intent := current_enemy_intent
 	current_enemy_intent = ""
@@ -703,7 +709,7 @@ func _resolve_pressure_card(index: int, route_valid: bool, starts_new_route: boo
 		return
 
 	_log_stance_protection(card.stance_damage)
-	enemy.take_hit(card.damage, card.stance_damage)
+	stance_system.apply_hit(card.damage, card.stance_damage)
 	_apply_card_spacing(card)
 	_clamp_duel_distance()
 	if card.id == "ground_smash":
@@ -745,7 +751,7 @@ func _resolve_pressure_card_snapshot(snapshot: Dictionary) -> void:
 		log_message.emit("No follow-up draw: repeated route decay.")
 	var card: Resource = deck_manager.play_queued_card_snapshot(snapshot, allow_follow_up and route_valid, allow_follow_up and starts_new_route)
 	_log_stance_protection(card.stance_damage)
-	enemy.take_hit(card.damage, card.stance_damage)
+	stance_system.apply_hit(card.damage, card.stance_damage)
 	_apply_card_spacing(card)
 	_clamp_duel_distance()
 	if card.id == "ground_smash":
@@ -781,7 +787,7 @@ func _resolve_player_card(card: Resource, bonus_frame_advantage := 0, apply_move
 		return
 
 	_log_stance_protection(card.stance_damage)
-	enemy.take_hit(card.damage, card.stance_damage)
+	stance_system.apply_hit(card.damage, card.stance_damage)
 	_apply_card_spacing(card)
 	_clamp_duel_distance()
 	if card.id == "ground_smash":
@@ -963,7 +969,7 @@ func _spend_pressure_frames(cost: int) -> void:
 		return
 
 	var previous := frame_advantage
-	var final_frame_advantage := frame_advantage - cost
+	var final_frame_advantage: int = frame_system.spend_pressure_frames(cost, frame_advantage)
 	frame_advantage = final_frame_advantage
 	advance_combat_frames(cost)
 	frame_advantage_changed.emit(frame_advantage)
@@ -1071,7 +1077,7 @@ func _on_follow_up_skipped(message: String) -> void:
 	log_message.emit("Queue contents after follow-up draw: %s." % get_queue_text())
 
 func _log_stance_protection(amount: int) -> void:
-	if amount > 0 and stance_system.protected():
+	if stance_system.should_log_protected_damage(amount):
 		log_message.emit("Stance protected: ignored %d stance damage" % amount)
 
 func _is_interrupt_card_index(index: int) -> bool:

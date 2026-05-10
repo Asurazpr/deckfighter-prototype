@@ -5,6 +5,8 @@ var manager: Node
 var deck_manager: Node
 var repeated_card_uses: Dictionary = {}
 
+# TODO: Move card definitions, route tables, generated follow-ups, and repeat
+# decay tuning into data assets so mods/character kits can replace them safely.
 func setup(manager_ref: Node, deck_manager_ref: Node) -> void:
 	manager = manager_ref
 	deck_manager = deck_manager_ref
@@ -43,4 +45,3 @@ func card_has_tag(card: Resource, tag_name: String) -> bool:
 
 func has_valid_card(enemy_broken: bool) -> bool:
 	return deck_manager.has_break_playable_card() if enemy_broken else deck_manager.has_valid_playable_card()
-
