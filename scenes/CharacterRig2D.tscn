@@ -1,0 +1,17 @@
+[gd_scene load_steps=2 format=3 uid="uid://character_rig_2d"]
+
+[ext_resource type="Script" path="res://scripts/animation/character_rig_2d.gd" id="1_rig"]
+
+[node name="CharacterRig2D" type="Node2D"]
+z_index = 2
+script = ExtResource("1_rig")
+
+[node name="hip_socket" type="Node2D" parent="."]
+
+[node name="hand_socket" type="Node2D" parent="."]
+
+[node name="foot_socket" type="Node2D" parent="."]
+
+[node name="weapon_socket" type="Node2D" parent="."]
+
+[node name="body_socket" type="Node2D" parent="."]

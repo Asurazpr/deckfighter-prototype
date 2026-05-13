@@ -4,6 +4,7 @@ extends CharacterBody2D
 signal hp_changed(current_hp: int, max_hp: int)
 signal defense_performed(defense_type: String)
 
+const CombatAnimationDriver := preload("res://scripts/animation/combat_animation_driver.gd")
 const SPEED := 250.0
 const JUMP_VELOCITY := -500.0
 const GRAVITY := 1300.0
@@ -18,6 +19,7 @@ var free_movement_enabled := true
 
 @onready var body: ColorRect = $Body
 @onready var state_label: Label = $StateLabel
+@onready var rig: Node = $Rig
 
 func _ready() -> void:
 	hp = max_hp
@@ -58,6 +60,8 @@ func take_damage(amount: int) -> void:
 		return
 	hp = maxi(0, hp - amount)
 	hp_changed.emit(hp, max_hp)
+	CombatAnimationDriver.drive_rig(rig, "hitstun", "IMPACT", 1.0, "", false)
+	CombatAnimationDriver.play_impact(rig)
 	_flash(Color.INDIAN_RED, "HIT")
 
 func perform_card_action(card: Resource) -> void:
@@ -65,6 +69,28 @@ func perform_card_action(card: Resource) -> void:
 
 func show_state(label: String, color: Color) -> void:
 	_flash(color, label)
+
+func show_timeline_phase(action_name: String, phase_name: String, phase_progress := 0.0, hit_level := "", hitbox_active := false) -> void:
+	CombatAnimationDriver.drive_rig(rig, action_name, phase_name, phase_progress, hit_level, hitbox_active)
+	match phase_name:
+		"STARTUP":
+			body.color = Color(0.35, 0.62, 1.0)
+			body.scale = Vector2(0.92, 1.04)
+		"ACTIVE", "IMPACT":
+			body.color = Color.GOLD
+			body.scale = Vector2(1.08, 0.96)
+		"RECOVERY":
+			body.color = Color(0.55, 0.82, 1.0)
+			body.scale = Vector2(0.98, 1.0)
+		_:
+			body.color = Color(0.25, 0.75, 1.0)
+			body.scale = Vector2.ONE
+	_set_state("%s\n%s" % [action_name.to_upper(), phase_name])
+
+func clear_timeline_visual() -> void:
+	body.color = Color(0.25, 0.75, 1.0)
+	body.scale = Vector2.ONE
+	CombatAnimationDriver.clear(rig)
 
 func set_input_enabled(enabled: bool) -> void:
 	input_enabled = enabled

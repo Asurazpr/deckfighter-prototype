@@ -18,6 +18,7 @@ const HitboxSystemScript := preload("res://scripts/combat/hitbox_system.gd")
 const TradeSystemScript := preload("res://scripts/combat/trade_system.gd")
 const StanceSystemScript := preload("res://scripts/combat/stance_system.gd")
 const EnemyAISystemScript := preload("res://scripts/combat/enemy_ai_system.gd")
+const CombatTimelineScript := preload("res://scripts/combat/combat_timeline.gd")
 const DEBUG_ATTACK_HITBOX_LIFETIME := 0.25
 
 @export var starting_frame_advantage := 0
@@ -61,6 +62,7 @@ var hitbox_system
 var trade_system
 var stance_system
 var enemy_ai_system
+var combat_timeline
 
 @onready var player = $"../Player"
 @onready var enemy = $"../Enemy"
@@ -98,6 +100,7 @@ func _setup_combat_systems() -> void:
 	stance_system.setup(enemy)
 	enemy_ai_system = EnemyAISystemScript.new()
 	enemy_ai_system.setup(self, enemy, frame_system)
+	combat_timeline = CombatTimelineScript.new()
 
 func _begin_combat() -> void:
 	deck_manager.start_combat()
@@ -111,7 +114,7 @@ func _log_architecture_validation() -> void:
 	var active_path: String = get_script().resource_path
 	var legacy_present := ResourceLoader.exists("res://scripts/combat_manager.gd")
 	log_message.emit("Active combat manager: %s (CombatManagerCore)." % active_path)
-	log_message.emit("Loaded combat systems: CombatClock, FrameSystem, QueueResolver, RouteSystem, MovementSystem, HitboxSystem, TradeSystem, StanceSystem, EnemyAISystem.")
+	log_message.emit("Loaded combat systems: CombatClock, CombatTimeline, FrameSystem, QueueResolver, RouteSystem, MovementSystem, HitboxSystem, TradeSystem, StanceSystem, EnemyAISystem.")
 	log_message.emit("Legacy combat manager present: %s." % str(legacy_present))
 
 func _process(_delta: float) -> void:
@@ -152,7 +155,7 @@ func get_main_hud_debug_text() -> String:
 	]
 
 func get_timing_debug_text() -> String:
-	return "Enemy base startup: %d\nEnemy effective startup: %d\nEnemy remaining startup: %d\nLast player startup: %d\nEnemy vulnerable frames: %d\nInitiative Offset: %s\nStance State: %s\nStance Recovery Frames: %d\nStance Break Stun Remaining: %d\nStance Protected: %s" % [
+	return "Enemy base startup: %d\nEnemy effective startup: %d\nEnemy remaining startup: %d\nLast player startup: %d\nEnemy vulnerable frames: %d\nInitiative Offset: %s\nStance State: %s\nStance Recovery Frames: %d\nStance Break Stun Remaining: %d\nStance Protected: %s\n%s\nEnemy incoming hit level: %s" % [
 		enemy_base_startup_frame,
 		enemy_effective_startup_frame,
 		remaining_startup_frames,
@@ -162,11 +165,26 @@ func get_timing_debug_text() -> String:
 		stance_system.state_name(),
 		stance_system.recovery_frames(),
 		stance_system.break_stun_frames(),
-		str(stance_system.protected())
+		str(stance_system.protected()),
+		combat_timeline.debug_text(remaining_startup_frames),
+		current_enemy_intent if current_enemy_intent != "" else "None"
 	]
 
 func get_enemy_ai_debug_text() -> String:
 	return enemy_ai_system.debug_text()
+
+func get_impact_bar_data() -> Dictionary:
+	if not waiting_for_defense or current_enemy_intent == "":
+		return {"visible": false, "progress": 0.0, "hit_level": "None", "action": "None"}
+	var progress := 0.0
+	if enemy_effective_startup_frame > 0:
+		progress = clampf(1.0 - (float(maxi(0, remaining_startup_frames)) / float(enemy_effective_startup_frame)), 0.0, 1.0)
+	return {
+		"visible": true,
+		"progress": progress,
+		"hit_level": current_enemy_intent,
+		"action": combat_timeline.action_name
+	}
 
 func can_play_cards() -> bool:
 	return (waiting_for_defense or ((frame_advantage > 0 or _enemy_break_frames_remaining() > 0) and not attack_in_progress)) and not combat_over
@@ -282,6 +300,8 @@ func _run_enemy_attack() -> void:
 		log_message.emit("Enemy next startup modified by %s." % _signed_int(initiative_offset))
 	initiative_offset = 0
 	remaining_startup_frames = enemy_effective_startup_frame
+	combat_timeline.begin_from_enemy_attack(current_enemy_intent, Enemy.ATTACKS[current_enemy_intent], enemy_effective_startup_frame)
+	_show_enemy_timeline_phase()
 	last_player_action_startup = 0
 	_clear_attack_hitboxes()
 	player.set_free_movement_enabled(false)
@@ -350,6 +370,7 @@ func _resolve_enemy_intent(defense_type: String) -> void:
 		return
 
 	if defense_type == "step_back" or defense_type == "step_forward":
+		_begin_player_movement_timeline(defense_type, _action_startup(defense_type))
 		_apply_intent_action_movement(defense_type)
 		_clamp_duel_distance()
 		_advance_enemy_startup(_action_startup(defense_type))
@@ -360,6 +381,7 @@ func _resolve_enemy_intent(defense_type: String) -> void:
 		return
 
 	if defense_type == "backstep" or _is_jump_action(defense_type):
+		_begin_player_movement_timeline(defense_type, _action_startup(defense_type))
 		_apply_intent_action_movement(defense_type)
 		_clamp_duel_distance()
 		_advance_enemy_startup(_action_startup(defense_type))
@@ -375,6 +397,7 @@ func _resolve_enemy_intent(defense_type: String) -> void:
 	log_message.emit("Block input at enemy startup %d." % block_input_startup)
 	log_message.emit("Block startup %d." % block_startup)
 	log_message.emit("Block became active at enemy startup %d." % startup_after_block)
+	_begin_player_movement_timeline(defense_type, block_startup)
 	_advance_enemy_startup(block_startup)
 	await _resolve_block_after_startup(defense_type, startup_after_block)
 
@@ -453,10 +476,14 @@ func _resolve_block_after_startup(defense_type: String, startup_after_block: int
 func _begin_enemy_resolution() -> void:
 	waiting_for_defense = false
 	Engine.time_scale = 1.0
+	combat_timeline.mark_active()
+	_show_enemy_timeline_phase()
 	frame_advantage_changed.emit(frame_advantage)
 
 func _finish_enemy_resolution() -> void:
 	enemy.finish_attack()
+	combat_timeline.finish_action()
+	enemy.clear_timeline_visual()
 	attack_in_progress = false
 	player.set_free_movement_enabled(false)
 	current_enemy_intent = ""
@@ -467,6 +494,8 @@ func _finish_enemy_resolution() -> void:
 	_schedule_enemy_if_needed()
 
 func _finish_enemy_resolution_after_recovery() -> void:
+	combat_timeline.mark_recovery()
+	_show_enemy_timeline_phase()
 	advance_combat_frames(int(round(ATTACK_RECOVERY * 60.0)))
 	await get_tree().create_timer(ATTACK_RECOVERY).timeout
 	_finish_enemy_resolution()
@@ -544,6 +573,7 @@ func _try_interrupt_with_card(index: int) -> void:
 
 	var card: Resource = deck_manager.hand[index]
 	last_player_action_startup = int(card.startup_frame)
+	_begin_player_card_timeline(card)
 	var card_hits := _card_would_hit_enemy_after_movement(card)
 	var enemy_startup_after_card := remaining_startup_frames - int(card.startup_frame)
 	advance_combat_frames(int(card.startup_frame), false, false)
@@ -603,6 +633,7 @@ func _try_interrupt_with_card(index: int) -> void:
 func _try_interrupt_with_card_snapshot(snapshot: Dictionary) -> void:
 	var card: Resource = _card_from_snapshot(snapshot)
 	last_player_action_startup = int(card.startup_frame)
+	_begin_player_card_timeline(card)
 	var card_hits := _card_would_hit_enemy_after_movement(card)
 	var enemy_startup_after_card := remaining_startup_frames - int(card.startup_frame)
 	advance_combat_frames(int(card.startup_frame), false, false)
@@ -769,6 +800,7 @@ func _resolve_pressure_card(index: int, route_valid: bool, starts_new_route: boo
 	var preview_card: Resource = deck_manager.hand[index]
 	log_message.emit("Card played: %s." % preview_card.display_name)
 	player.perform_card_action(preview_card)
+	_begin_player_card_timeline(preview_card)
 	_move_player_by_card(preview_card)
 	_clamp_duel_distance()
 	advance_combat_frames(int(preview_card.startup_frame))
@@ -815,6 +847,7 @@ func _resolve_pressure_card_snapshot(snapshot: Dictionary) -> void:
 	var starts_new_route := bool(snapshot.get("starts_new_route_at_queue", false))
 	log_message.emit("Card played: %s." % preview_card.display_name)
 	player.perform_card_action(preview_card)
+	_begin_player_card_timeline(preview_card)
 	_move_player_by_card(preview_card)
 	_clamp_duel_distance()
 	advance_combat_frames(int(preview_card.startup_frame))
@@ -855,6 +888,7 @@ func _resolve_pressure_card_snapshot(snapshot: Dictionary) -> void:
 func _resolve_player_card(card: Resource, bonus_frame_advantage := 0, apply_movement := true, route_valid := true, starts_new_route := false) -> void:
 	log_message.emit("Card played: %s." % card.display_name)
 	player.perform_card_action(card)
+	_begin_player_card_timeline(card)
 	if apply_movement:
 		_move_player_by_card(card)
 	_clamp_duel_distance()
@@ -1012,12 +1046,21 @@ func _card_would_hit_enemy_after_movement(card: Resource) -> bool:
 	return hitbox_system.card_would_hit_enemy_after_movement(card)
 
 func _set_player_attack_hitbox(hitbox: Rect2) -> void:
+	if hitbox.size != Vector2.ZERO and combat_timeline.actor == "PLAYER":
+		combat_timeline.mark_active()
+		_show_player_timeline_phase()
 	hitbox_system.set_player_attack_hitbox(hitbox)
 
 func _set_enemy_attack_hitbox(hitbox: Rect2) -> void:
+	if hitbox.size != Vector2.ZERO and combat_timeline.actor == "ENEMY":
+		combat_timeline.mark_active()
+		_show_enemy_timeline_phase()
 	hitbox_system.set_enemy_attack_hitbox(hitbox)
 
 func _clear_attack_hitboxes() -> void:
+	if combat_timeline != null and combat_timeline.hitbox_active():
+		combat_timeline.mark_recovery()
+		_apply_timeline_visual()
 	hitbox_system.clear_attack_hitboxes()
 
 func _tick_debug_hitboxes(delta: float) -> void:
@@ -1027,6 +1070,30 @@ func _create_hitbox_debug_drawer() -> void:
 	var debug_drawer := HitboxDebugDrawScript.new()
 	debug_drawer.set("combat_manager", self)
 	get_parent().call_deferred("add_child", debug_drawer)
+
+func _begin_player_card_timeline(card: Resource) -> void:
+	combat_timeline.begin_from_card(card)
+	_show_player_timeline_phase()
+
+func _begin_player_movement_timeline(action: String, cost: int) -> void:
+	combat_timeline.begin_movement("PLAYER", _defense_display_name(action), cost)
+	_show_player_timeline_phase()
+
+func _show_player_timeline_phase() -> void:
+	if player != null and player.has_method("show_timeline_phase"):
+		player.show_timeline_phase(combat_timeline.action_name, combat_timeline.phase_name(), combat_timeline.phase_progress(), "", combat_timeline.hitbox_active())
+
+func _show_enemy_timeline_phase() -> void:
+	if enemy != null and enemy.has_method("show_timeline_phase"):
+		enemy.show_timeline_phase(combat_timeline.action_name, combat_timeline.phase_name(), combat_timeline.phase_progress(), current_enemy_intent, combat_timeline.hitbox_active())
+
+func _apply_timeline_visual() -> void:
+	if combat_timeline == null:
+		return
+	if combat_timeline.actor == "PLAYER":
+		_show_player_timeline_phase()
+	elif combat_timeline.actor == "ENEMY":
+		_show_enemy_timeline_phase()
 
 func _clamp_duel_distance() -> void:
 	movement_system.clamp_duel_distance()
@@ -1040,6 +1107,7 @@ func _apply_intent_action_movement(action: String) -> void:
 func _apply_pressure_movement(action: String) -> void:
 	var cost := _action_startup(action)
 	last_player_action_startup = cost
+	_begin_player_movement_timeline(action, cost)
 	_apply_intent_action_movement(action)
 	_clamp_duel_distance()
 	log_message.emit("Player chose %s." % _defense_display_name(action))
@@ -1053,6 +1121,9 @@ func _advance_enemy_startup(cost: int) -> void:
 
 func advance_combat_frames(frames: int, tick_enemy_startup := false, tick_enemy_vulnerability := true) -> void:
 	combat_clock.advance_combat_frames(frames, tick_enemy_startup, tick_enemy_vulnerability)
+	if combat_timeline != null:
+		combat_timeline.advance_frames(frames)
+		_apply_timeline_visual()
 
 func _spend_pressure_frames(cost: int) -> void:
 	if cost <= 0:
@@ -1373,6 +1444,12 @@ func _end_combat(message: String) -> void:
 	if enemy.has_method("clear_intent"):
 		enemy.clear_intent()
 	_clear_attack_hitboxes()
+	if combat_timeline != null:
+		combat_timeline.finish_action()
+	if player.has_method("clear_timeline_visual"):
+		player.clear_timeline_visual()
+	if enemy.has_method("clear_timeline_visual"):
+		enemy.clear_timeline_visual()
 	Engine.time_scale = 1.0
 	log_message.emit(message)
 

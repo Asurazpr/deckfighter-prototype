@@ -1,6 +1,7 @@
-[gd_scene load_steps=3 format=3 uid="uid://player_scene"]
+[gd_scene load_steps=4 format=3 uid="uid://player_scene"]
 
 [ext_resource type="Script" path="res://scripts/player.gd" id="1_player"]
+[ext_resource type="PackedScene" path="res://scenes/CharacterRig2D.tscn" id="2_rig"]
 
 [sub_resource type="RectangleShape2D" id="RectangleShape2D_player"]
 size = Vector2(54, 98)
@@ -13,11 +14,15 @@ position = Vector2(0, -49)
 shape = SubResource("RectangleShape2D_player")
 
 [node name="Body" type="ColorRect" parent="."]
+visible = false
 offset_left = -27.0
 offset_top = -98.0
 offset_right = 27.0
 offset_bottom = 0.0
-color = Color(0.25, 0.75, 1, 1)
+color = Color(0.25, 0.75, 1, 0.22)
+
+[node name="Rig" parent="." instance=ExtResource("2_rig")]
+body_color = Color(0.25, 0.75, 1, 1)
 
 [node name="StateLabel" type="Label" parent="."]
 offset_left = -54.0

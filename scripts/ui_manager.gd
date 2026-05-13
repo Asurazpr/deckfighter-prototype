@@ -35,6 +35,9 @@ var enemy_ai_label: Label
 var timing_panel: PanelContainer
 var timing_label: Label
 var queue_label: Label
+var impact_panel: PanelContainer
+var impact_label: Label
+var impact_bar: ProgressBar
 var debug_panels_visible := true
 var enemy_ai_visible := true
 var timing_visible := true
@@ -57,6 +60,7 @@ func _process(_delta: float) -> void:
 		enemy_ai_label.text = combat_manager.get_enemy_ai_debug_text()
 	if timing_label != null and combat_manager.has_method("get_timing_debug_text"):
 		timing_label.text = combat_manager.get_timing_debug_text()
+	_refresh_impact_bar()
 
 func bind(player: Node, enemy: Node, deck_manager: Node, manager: Node) -> void:
 	combat_manager = manager
@@ -204,6 +208,35 @@ func _build_debug_panels() -> void:
 	queue_label.add_theme_font_size_override("font_size", 18)
 	root.add_child(queue_label)
 
+	impact_panel = PanelContainer.new()
+	impact_panel.position = Vector2(610, 36)
+	impact_panel.size = Vector2(380, 78)
+	root.add_child(impact_panel)
+
+	var impact_margin := MarginContainer.new()
+	impact_margin.add_theme_constant_override("margin_left", 12)
+	impact_margin.add_theme_constant_override("margin_top", 10)
+	impact_margin.add_theme_constant_override("margin_right", 12)
+	impact_margin.add_theme_constant_override("margin_bottom", 10)
+	impact_panel.add_child(impact_margin)
+
+	var impact_box := VBoxContainer.new()
+	impact_box.add_theme_constant_override("separation", 6)
+	impact_margin.add_child(impact_box)
+
+	impact_label = Label.new()
+	impact_label.text = "Incoming: None"
+	impact_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	impact_label.add_theme_font_size_override("font_size", 18)
+	impact_box.add_child(impact_label)
+
+	impact_bar = ProgressBar.new()
+	impact_bar.max_value = 100.0
+	impact_bar.value = 0.0
+	impact_bar.show_percentage = false
+	impact_bar.custom_minimum_size = Vector2(320, 18)
+	impact_box.add_child(impact_bar)
+
 func _create_debug_panel(title: String, position: Vector2, size: Vector2) -> PanelContainer:
 	var panel := PanelContainer.new()
 	panel.position = position
@@ -249,6 +282,19 @@ func _apply_debug_visibility() -> void:
 		queue_label.visible = debug_panels_visible
 	if combat_log_panel != null:
 		combat_log_panel.visible = combat_log_visible
+	if impact_panel != null:
+		impact_panel.visible = true
+
+func _refresh_impact_bar() -> void:
+	if impact_panel == null or combat_manager == null or not combat_manager.has_method("get_impact_bar_data"):
+		return
+	var data: Dictionary = combat_manager.get_impact_bar_data()
+	impact_panel.visible = bool(data.get("visible", false))
+	if not impact_panel.visible:
+		return
+	var hit_level := String(data.get("hit_level", "None"))
+	impact_label.text = "Incoming: %s" % hit_level
+	impact_bar.value = (1.0 - clampf(float(data.get("progress", 0.0)), 0.0, 1.0)) * 100.0
 
 func _on_card_pressed(index: int) -> void:
 	_try_play_card(index)

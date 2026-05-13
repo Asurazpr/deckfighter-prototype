@@ -8,6 +8,8 @@ signal attack_resolved(attack_type: String)
 signal break_started
 signal break_ended
 
+const CombatAnimationDriver := preload("res://scripts/animation/combat_animation_driver.gd")
+
 enum State { IDLE, TELEGRAPH, ATTACK, BREAK }
 enum StanceState { NORMAL, BROKEN_HITSTUN, BROKEN_BLOCKSTUN, RECOVERING_PROTECTED }
 enum DecisionState { NEUTRAL, BLOCKING, PUNISHING, PRESSURING, MASHING, RECOVERING, STUNNED, STANCE_BROKEN, DEFENSIVE_REACTION }
@@ -46,13 +48,16 @@ var last_action_score := 0.0
 var boss_phase_id := "phase_1"
 
 @onready var body: ColorRect = $Body
+@onready var rig: Node = $Rig
 @onready var telegraph_label: Label = $TelegraphLabel
+@onready var stance_break_bar: ProgressBar = $StanceBreakBar
 
 func _ready() -> void:
 	hp = max_hp
 	hp_changed.emit(hp, max_hp)
 	stance_changed.emit(stance, max_stance)
-	telegraph_label.add_theme_font_size_override("font_size", 42)
+	telegraph_label.add_theme_font_size_override("font_size", 20)
+	stance_break_bar.visible = false
 	_set_idle()
 
 func can_act() -> bool:
@@ -64,6 +69,7 @@ func start_attack(attack_id := "") -> void:
 	state = State.TELEGRAPH
 	current_attack = attack_id if ATTACKS.has(attack_id) else _fallback_attack_id()
 	telegraph_label.text = current_attack
+	telegraph_label.modulate = _attack_color(current_attack)
 	body.color = _attack_color(current_attack)
 	attack_telegraphed.emit(current_attack)
 
@@ -110,6 +116,7 @@ func perform_punish_combo() -> int:
 	state = State.ATTACK
 	current_attack = "PUNISH"
 	telegraph_label.text = "PUNISH"
+	telegraph_label.modulate = Color.WHITE
 	body.color = Color.CRIMSON
 	await get_tree().create_timer(0.25, true, false, true).timeout
 	_set_idle()
@@ -122,6 +129,8 @@ func take_hit(damage: int, stance_damage: int) -> void:
 	hp = maxi(0, hp - damage)
 	hp_changed.emit(hp, max_hp)
 	add_stance_damage(stance_damage)
+	CombatAnimationDriver.drive_rig(rig, "hitstun", "IMPACT", 1.0, "", false)
+	CombatAnimationDriver.play_impact(rig)
 	_flash_hit()
 
 func add_stance_damage(amount: int) -> void:
@@ -155,7 +164,9 @@ func enter_break(from_block := false) -> void:
 	stance_state = StanceState.BROKEN_BLOCKSTUN if from_block else StanceState.BROKEN_HITSTUN
 	current_attack = ""
 	telegraph_label.text = "BREAK"
+	telegraph_label.modulate = Color.ORANGE
 	body.color = Color.ORANGE
+	CombatAnimationDriver.drive_rig(rig, "stance_break", "IMPACT", 1.0, "", false)
 	var break_frames := STANCE_BREAK_BLOCK_RECOVERY_FRAMES if from_block else STANCE_BREAK_HITSTUN_FRAMES
 	stance_break_stun_frames_remaining = break_frames
 	stance_protection_frames_remaining = STANCE_PROTECTION_RECOVERY_FRAMES
@@ -180,6 +191,7 @@ func advance_stance_recovery_frames(frames: int) -> void:
 		stance_protection_frames_remaining -= spent_protection
 
 	_update_stance_recovery_total()
+	_update_stance_break_bar()
 	if stance_break_stun_frames_remaining <= 0 and stance_protection_frames_remaining <= 0:
 		_finish_stance_recovery()
 
@@ -190,6 +202,7 @@ func _finish_stance_recovery() -> void:
 	stance_break_stun_frames_remaining = 0
 	stance_protection_frames_remaining = 0
 	stance_recovery_frames_remaining = 0
+	_update_stance_break_bar()
 	break_ended.emit()
 	_set_idle()
 
@@ -229,6 +242,7 @@ func get_intent_profile_overrides() -> Dictionary:
 
 func _update_stance_recovery_total() -> void:
 	stance_recovery_frames_remaining = stance_break_stun_frames_remaining + stance_protection_frames_remaining
+	_update_stance_break_bar()
 
 func _stance_damage_is_protected() -> bool:
 	return stance_state == StanceState.BROKEN_HITSTUN or stance_state == StanceState.BROKEN_BLOCKSTUN or stance_state == StanceState.RECOVERING_PROTECTED
@@ -256,7 +270,42 @@ func _set_idle() -> void:
 	decision_state = DecisionState.NEUTRAL
 	current_attack = ""
 	telegraph_label.text = "READY"
+	telegraph_label.modulate = Color.WHITE
 	body.color = Color(1.0, 0.28, 0.22)
+	body.scale = Vector2.ONE
+	stance_break_bar.visible = false
+	CombatAnimationDriver.clear(rig)
+
+func show_timeline_phase(action_name: String, phase_name: String, phase_progress := 0.0, hit_level := "", hitbox_active := false) -> void:
+	CombatAnimationDriver.drive_rig(rig, action_name, phase_name, phase_progress, current_attack if current_attack != "" else hit_level, hitbox_active)
+	match phase_name:
+		"STARTUP":
+			body.color = _attack_color(current_attack).lerp(Color.WHITE, 0.25)
+			body.scale = Vector2(0.94, 1.06)
+		"ACTIVE", "IMPACT":
+			body.color = Color.CRIMSON
+			body.scale = Vector2(1.08, 0.96)
+		"RECOVERY":
+			body.color = Color(1.0, 0.46, 0.34)
+			body.scale = Vector2(0.98, 1.0)
+		_:
+			body.scale = Vector2.ONE
+	var marker_text := current_attack if current_attack != "" else action_name.to_upper()
+	telegraph_label.text = "%s %s" % [marker_text, phase_name]
+	telegraph_label.modulate = _attack_color(current_attack if current_attack != "" else hit_level)
+
+func clear_timeline_visual() -> void:
+	if stance_state == StanceState.NORMAL:
+		body.color = Color(1.0, 0.28, 0.22)
+		body.scale = Vector2.ONE
+		CombatAnimationDriver.clear(rig)
+
+func _update_stance_break_bar() -> void:
+	if stance_break_bar == null:
+		return
+	stance_break_bar.visible = stance_state != StanceState.NORMAL
+	stance_break_bar.max_value = STANCE_BREAK_HITSTUN_FRAMES + STANCE_PROTECTION_RECOVERY_FRAMES
+	stance_break_bar.value = stance_recovery_frames_remaining
 
 func _fallback_attack_id() -> String:
 	return "MID"
