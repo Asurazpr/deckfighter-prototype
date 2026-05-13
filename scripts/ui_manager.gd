@@ -293,8 +293,10 @@ func _refresh_impact_bar() -> void:
 	if not impact_panel.visible:
 		return
 	var hit_level := String(data.get("hit_level", "None"))
-	impact_label.text = "Incoming: %s" % hit_level
-	impact_bar.value = (1.0 - clampf(float(data.get("progress", 0.0)), 0.0, 1.0)) * 100.0
+	impact_label.text = "Incoming: %s\nReact: J Block | S+J Low" % hit_level
+	var progress := clampf(float(data.get("progress", 0.0)), 0.0, 1.0)
+	impact_bar.value = (1.0 - progress) * 100.0
+	impact_bar.modulate = Color(1.0, 0.45, 0.35) if progress >= 0.8 else Color.WHITE
 
 func _on_card_pressed(index: int) -> void:
 	_try_play_card(index)

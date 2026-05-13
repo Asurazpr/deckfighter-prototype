@@ -117,7 +117,7 @@ Current prototype controls may change during development.
 | Movement | `Space` | Jump / neutral jump / jump-in movement |
 | Movement | `L` | Backstep |
 | Defense | `J` | Block |
-| Defense | `K` | Crouch block |
+| Defense | `S` + `J` | Low block |
 | Combat | Mouse | Select cards / queue actions |
 | Combat | `1`-`4` | Queue or play hand cards |
 | Combat | `E` | Execute queued tactical actions / end turn |

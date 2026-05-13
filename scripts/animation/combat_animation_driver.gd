@@ -14,6 +14,15 @@ static func animation_key_for_action(action_name: String, phase_name: String, hi
 	var normalized := action_name.to_lower().replace(" ", "_")
 	if normalized == "" or normalized == "none":
 		return "idle"
+	match hit_level:
+		"HIGH":
+			return "high_hook"
+		"MID":
+			return "mid_punch"
+		"LOW":
+			return "low_sweep"
+		"OVERHEAD":
+			return "overhead_smash"
 	if normalized.find("jab") != -1 or normalized.find("high_check") != -1:
 		return "jab_%s" % phase_name.to_lower()
 	if normalized.find("step_forward") != -1 or normalized.find("step_forward") != -1 or normalized.find("step_slash") != -1:

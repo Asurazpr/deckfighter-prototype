@@ -49,7 +49,7 @@ func action_startup(action: String) -> int:
 		"block":
 			return 4
 		"crouch_block":
-			return 5
+			return 4
 		"jump", "jump_forward", "jump_back", "neutral_jump":
 			return 4
 		"backstep":
@@ -111,4 +111,3 @@ func apply_card_spacing(card: Resource) -> void:
 			pass
 		"ground_smash":
 			enemy.global_position.x += 180.0 * direction_to_enemy()
-

@@ -38,11 +38,9 @@ func _physics_process(delta: float) -> void:
 			defense_performed.emit("jump")
 			_flash(Color.SKY_BLUE, "JUMP")
 		if Input.is_action_just_pressed("block"):
-			defense_performed.emit("block")
-			_flash(Color.DODGER_BLUE, "BLOCK")
-		if Input.is_action_just_pressed("crouch_block"):
-			defense_performed.emit("crouch_block")
-			_flash(Color.CORNFLOWER_BLUE, "CROUCH")
+			var defense_type := "crouch_block" if Input.is_key_pressed(KEY_S) else "block"
+			defense_performed.emit(defense_type)
+			_flash(Color.CORNFLOWER_BLUE if defense_type == "crouch_block" else Color.DODGER_BLUE, "LOW BLOCK" if defense_type == "crouch_block" else "BLOCK")
 		if Input.is_action_just_pressed("backstep"):
 			velocity.x = -SPEED * 2.2
 			defense_performed.emit("backstep")

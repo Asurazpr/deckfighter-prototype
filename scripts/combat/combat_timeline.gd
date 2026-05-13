@@ -81,6 +81,12 @@ func advance_frames(frames: int) -> void:
 	elapsed_frames += frames
 	_update_phase()
 
+func set_startup_progress(progress: float) -> void:
+	if phase == Phase.DONE:
+		return
+	elapsed_frames = clampi(int(round(float(hitbox_on_frame) * clampf(progress, 0.0, 1.0))), 0, hitbox_on_frame)
+	phase = Phase.STARTUP if elapsed_frames < hitbox_on_frame else Phase.IMPACT
+
 func mark_active() -> void:
 	elapsed_frames = hitbox_on_frame
 	phase = Phase.ACTIVE

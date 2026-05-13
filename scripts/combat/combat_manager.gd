@@ -4,12 +4,15 @@ extends Node
 signal frame_advantage_changed(value: int)
 signal log_message(message: String)
 
-enum CombatFlowState { NEUTRAL, PLANNING, EXECUTING_QUEUE, PLAYER_PRESSURE, ENEMY_INTENT, DEFENSE_REACTION, STANCE_BREAK, PUNISH, GAME_OVER }
+enum CombatFlowState { NEUTRAL, SLOW_NEUTRAL, PLANNING, EXECUTING_QUEUE, PLAYER_PRESSURE, ENEMY_INTENT, REACTION_WINDOW, DEFENSE_REACTION, STANCE_BREAK, PUNISH, GAME_OVER }
 
 const ATTACK_RECOVERY := 0.35
 const PLAYER_CHOICE_TIME_SCALE := 0.2
+const NEUTRAL_SLOW_TIME_SCALE := 0.35
 const ENEMY_INTENT_TIME_SCALE := 0.15
 const PERFECT_BLOCK_HITSTOP := 0.12
+const PERFECT_BLOCK_REACTION_PROGRESS := 0.85
+const REACTION_GUARD_STARTUP_FRAMES := 4
 const HitboxDebugDrawScript := preload("res://scripts/hitbox_debug_draw.gd")
 const CombatClockScript := preload("res://scripts/combat/combat_clock.gd")
 const FrameSystemScript := preload("res://scripts/combat/frame_system.gd")
@@ -36,6 +39,10 @@ const DEBUG_ATTACK_HITBOX_LIFETIME := 0.25
 @export var max_queue_size := 3
 @export var trade_player_recovery_frames := 18
 @export var trade_enemy_recovery_frames := 26
+@export var live_neutral_player_speed := 140.0
+@export var live_neutral_enemy_speed := 70.0
+@export var enemy_intent_range := 95.0
+@export var slow_neutral_intent_delay := 1.2
 
 var frame_advantage := 0
 var last_defense := ""
@@ -45,6 +52,26 @@ var combat_over := false
 var punish_in_progress := false
 var enemy_intent_scheduled := false
 var combat_state := CombatFlowState.NEUTRAL
+var reaction_window_active := false
+var reaction_window_resolving := false
+var reaction_total_seconds := 0.0
+var reaction_remaining_seconds := 0.0
+var selected_defense_type := ""
+var defense_input_progress := -1.0
+var current_guard_input := ""
+var guard_start_elapsed_frame := -1
+var guard_startup_frames_remaining := 0
+var guard_active := false
+var correct_defense_became_active_progress := -1.0
+var impact_resolution_text := "None"
+var slow_neutral_active := false
+var enemy_approach_active := false
+var player_live_movement_active := false
+var last_player_live_movement_active := false
+var last_enemy_approach_active := false
+var slow_neutral_elapsed := 0.0
+var last_distance := 0.0
+var distance_change_rate := 0.0
 var current_enemy_intent := ""
 var enemy_base_startup_frame := 0
 var enemy_effective_startup_frame := 0
@@ -107,11 +134,11 @@ func _setup_combat_systems() -> void:
 
 func _begin_combat() -> void:
 	deck_manager.start_combat()
-	player.set_free_movement_enabled(false)
+	last_distance = _distance_between_fighters()
+	_enter_slow_neutral("Slow neutral movement started.")
 	frame_advantage_changed.emit(frame_advantage)
 	_log_architecture_validation()
 	log_message.emit("Duel start. Read the enemy intent.")
-	_schedule_enemy_if_needed()
 
 func _log_architecture_validation() -> void:
 	var active_path: String = get_script().resource_path
@@ -125,6 +152,8 @@ func _process(_delta: float) -> void:
 		return
 	_clamp_duel_distance()
 	_tick_debug_hitboxes(_delta)
+	_tick_reaction_window(_delta)
+	_tick_slow_neutral(_delta)
 
 	if player.hp <= 0:
 		_end_combat("Player defeated.")
@@ -158,7 +187,7 @@ func get_main_hud_debug_text() -> String:
 	]
 
 func get_timing_debug_text() -> String:
-	return "Enemy base startup: %d\nEnemy effective startup: %d\nEnemy remaining startup: %d\nLast player startup: %d\nEnemy vulnerable frames: %d\nInitiative Offset: %s\nStance State: %s\nStance Recovery Frames: %d\nStance Break Stun Remaining: %d\nStance Protected: %s\n%s\nEnemy incoming hit level: %s" % [
+	return "Enemy base startup: %d\nEnemy effective startup: %d\nEnemy remaining startup: %d\nLast player startup: %d\nEnemy vulnerable frames: %d\nInitiative Offset: %s\nStance State: %s\nStance Recovery Frames: %d\nStance Break Stun Remaining: %d\nStance Protected: %s\nMovement Mode: %s\nTime Mode: %s\nCurrent Time Scale: %.2f\nPlayer Live Movement Active: %s\nEnemy Approach Active: %s\nDistance Change Rate: %.1f px/s\nReaction Defense Mode: LIVE\nReaction Window Active: %s\nReaction Total Seconds: %.2f\nReaction Remaining Seconds: %.2f\nReaction Progress: %d%%\nCurrent Guard Input: %s\nGuard Startup Frames Remaining: %d\nGuard Active: %s\nCorrect Defense Became Active At: %s\nDefense Input Progress: %s\nPerfect Window Active: %s\nImpact Resolution: %s\n%s\nEnemy incoming hit level: %s" % [
 		enemy_base_startup_frame,
 		enemy_effective_startup_frame,
 		remaining_startup_frames,
@@ -169,6 +198,23 @@ func get_timing_debug_text() -> String:
 		stance_system.recovery_frames(),
 		stance_system.break_stun_frames(),
 		str(stance_system.protected()),
+		_movement_mode_text(),
+		_time_mode_text(),
+		Engine.time_scale,
+		str(player_live_movement_active),
+		str(enemy_approach_active),
+		distance_change_rate,
+		str(reaction_window_active),
+		reaction_total_seconds,
+		reaction_remaining_seconds,
+		int(round(_reaction_progress() * 100.0)),
+		_defense_display_name(current_guard_input) if current_guard_input != "" else "None",
+		int(ceil(guard_startup_frames_remaining)),
+		str(guard_active),
+		("%d%%" % int(round(correct_defense_became_active_progress * 100.0))) if correct_defense_became_active_progress >= 0.0 else "None",
+		("%d%%" % int(round(defense_input_progress * 100.0))) if defense_input_progress >= 0.0 else "None",
+		str(_perfect_block_window_active()),
+		impact_resolution_text,
 		combat_timeline.debug_text(remaining_startup_frames),
 		current_enemy_intent if current_enemy_intent != "" else "None"
 	]
@@ -179,20 +225,27 @@ func get_enemy_ai_debug_text() -> String:
 func get_impact_bar_data() -> Dictionary:
 	if not waiting_for_defense or current_enemy_intent == "":
 		return {"visible": false, "progress": 0.0, "hit_level": "None", "action": "None"}
-	var progress := 0.0
-	if enemy_effective_startup_frame > 0:
+	var progress := _reaction_progress() if reaction_window_active else 0.0
+	if not reaction_window_active and enemy_effective_startup_frame > 0:
 		progress = clampf(1.0 - (float(maxi(0, remaining_startup_frames)) / float(enemy_effective_startup_frame)), 0.0, 1.0)
 	return {
 		"visible": true,
 		"progress": progress,
 		"hit_level": current_enemy_intent,
-		"action": combat_timeline.action_name
+		"action": combat_timeline.action_name,
+		"perfect_window": progress >= PERFECT_BLOCK_REACTION_PROGRESS
 	}
 
 func can_play_cards() -> bool:
+	if reaction_window_active:
+		return false
 	return (waiting_for_defense or ((frame_advantage > 0 or _enemy_break_frames_remaining() > 0) and not attack_in_progress)) and not combat_over
 
 func is_hand_card_playable(index: int) -> bool:
+	if reaction_window_active:
+		return false
+	if slow_neutral_active:
+		return index >= 0 and index < deck_manager.hand.size() and not _is_card_instance_queued(deck_manager.hand[index])
 	if waiting_for_defense:
 		return index >= 0 and index < deck_manager.hand.size() and not _is_card_instance_queued(deck_manager.hand[index])
 	return can_play_cards() and index >= 0 and index < deck_manager.hand.size() and not _is_card_instance_queued(deck_manager.hand[index])
@@ -209,6 +262,15 @@ func get_card_prediction(index: int) -> String:
 	return "normal"
 
 func play_card(index: int) -> void:
+	if reaction_window_active:
+		log_message.emit("Defense is live input during reaction window.")
+		return
+
+	if slow_neutral_active and not queue_resolver.resolving:
+		_queue_tactical_action(_make_card_queue_action(index))
+		log_message.emit("Player queued action during movement.")
+		return
+
 	if _is_tactical_mode() and not queue_resolver.resolving:
 		_queue_tactical_action(_make_card_queue_action(index))
 		return
@@ -234,6 +296,26 @@ func _on_player_defense(defense_type: String) -> void:
 func _unhandled_key_input(event: InputEvent) -> void:
 	var key_event := event as InputEventKey
 	if key_event == null or not key_event.pressed or key_event.echo:
+		return
+
+	if slow_neutral_active:
+		if key_event.keycode == KEY_E:
+			get_viewport().set_input_as_handled()
+			_execute_or_wait_tactical_queue()
+			return
+		if key_event.keycode == KEY_BACKSPACE:
+			get_viewport().set_input_as_handled()
+			_pop_tactical_action()
+			return
+		if key_event.keycode == KEY_C:
+			get_viewport().set_input_as_handled()
+			_clear_tactical_queue()
+			return
+
+	if reaction_window_active:
+		if key_event.keycode == KEY_F1 or key_event.keycode == KEY_F2 or key_event.keycode == KEY_F3 or key_event.keycode == KEY_F4:
+			return
+		get_viewport().set_input_as_handled()
 		return
 
 	if _is_tactical_mode():
@@ -278,10 +360,11 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 		_apply_pressure_movement(pressure_action)
 
-func _run_enemy_attack() -> void:
+func _run_enemy_attack(start_reaction := true) -> void:
 	if combat_over or frame_advantage > 0 or attack_in_progress:
 		return
 
+	_exit_slow_neutral()
 	var ai_context := _enemy_ai_context(initiative_offset)
 	var ai_decision: Dictionary = enemy_ai_system.choose_intent(ai_context)
 	_log_enemy_ai_decision(ai_decision)
@@ -293,7 +376,8 @@ func _run_enemy_attack() -> void:
 	attack_in_progress = true
 	waiting_for_defense = true
 	last_defense = ""
-	queue_resolver.clear()
+	if start_reaction:
+		queue_resolver.clear()
 	_reset_pressure_sequence()
 	enemy.start_attack(String(ai_decision.get("action_id", "")))
 	current_enemy_intent = enemy.current_attack
@@ -305,11 +389,13 @@ func _run_enemy_attack() -> void:
 	remaining_startup_frames = enemy_effective_startup_frame
 	combat_timeline.begin_from_enemy_attack(current_enemy_intent, Enemy.ATTACKS[current_enemy_intent], enemy_effective_startup_frame)
 	_show_enemy_timeline_phase()
+	if start_reaction:
+		_start_reaction_window(current_enemy_intent, enemy_effective_startup_frame)
 	last_player_action_startup = 0
 	_clear_attack_hitboxes()
 	player.set_free_movement_enabled(false)
 	log_message.emit("Enemy intent: %s." % enemy.current_attack)
-	log_message.emit("Bullet time: choose defense.")
+	log_message.emit("Slow time: react before impact." if start_reaction else "Enemy intent opened for queued action.")
 	frame_advantage_changed.emit(frame_advantage)
 	_update_time_scale()
 
@@ -350,13 +436,197 @@ func _log_enemy_ai_decision(decision: Dictionary) -> void:
 	log_message.emit("Enemy profile: %s phase %s; %s." % [enemy_ai_system.intent_profile.get("tier", "NORMAL"), enemy_ai_system.boss_phase_id, enemy_ai_system.last_profile_modifiers])
 
 func _enemy_approach_or_wait() -> void:
-	if _distance_between_fighters() > 95.0:
-		enemy.global_position.x += 35.0 * _direction_to_player()
-		_clamp_duel_distance()
-		log_message.emit("Enemy pressure: approached due to spacing.")
+	_enter_slow_neutral("Slow neutral movement started.")
+
+func _enter_slow_neutral(message := "") -> void:
+	if combat_over or attack_in_progress or waiting_for_defense or punish_in_progress or frame_advantage > 0:
+		return
+	var was_active := slow_neutral_active
+	slow_neutral_active = true
+	slow_neutral_elapsed = 0.0 if not was_active else slow_neutral_elapsed
+	last_distance = _distance_between_fighters()
+	player.set_free_movement_enabled(true)
+	Engine.time_scale = NEUTRAL_SLOW_TIME_SCALE
+	if message != "" and not was_active:
+		log_message.emit(message)
+
+func _exit_slow_neutral() -> void:
+	if slow_neutral_active:
+		slow_neutral_active = false
+		player_live_movement_active = false
+		enemy_approach_active = false
+		last_player_live_movement_active = false
+		last_enemy_approach_active = false
+	player.set_free_movement_enabled(false)
+
+func _tick_slow_neutral(delta: float) -> void:
+	if not slow_neutral_active or combat_over:
+		return
+	if attack_in_progress or waiting_for_defense or reaction_window_active or punish_in_progress or frame_advantage > 0:
+		_exit_slow_neutral()
+		return
+
+	var combat_delta := delta
+	slow_neutral_elapsed += combat_delta
+	var previous_distance := _distance_between_fighters()
+	player_live_movement_active = Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_D)
+	_apply_live_neutral_player_movement(combat_delta)
+	_apply_live_neutral_enemy_movement(combat_delta)
+	_clamp_duel_distance()
+	var current_distance := _distance_between_fighters()
+	distance_change_rate = (current_distance - previous_distance) / maxf(combat_delta, 0.001)
+	last_distance = current_distance
+	_log_slow_neutral_state_changes()
+
+	if current_distance <= enemy_intent_range and slow_neutral_elapsed >= slow_neutral_intent_delay:
+		_run_enemy_attack()
+
+func _apply_live_neutral_player_movement(real_delta: float) -> void:
+	var direction := 0.0
+	if Input.is_key_pressed(KEY_A):
+		direction -= 1.0
+	if Input.is_key_pressed(KEY_D):
+		direction += 1.0
+	if direction == 0.0:
+		return
+	player.global_position.x += direction * live_neutral_player_speed * real_delta
+
+func _apply_live_neutral_enemy_movement(real_delta: float) -> void:
+	enemy_approach_active = _distance_between_fighters() > enemy_intent_range
+	if not enemy_approach_active:
+		return
+	enemy.global_position.x += _direction_to_player() * live_neutral_enemy_speed * real_delta
+
+func _log_slow_neutral_state_changes() -> void:
+	if player_live_movement_active != last_player_live_movement_active:
+		if player_live_movement_active:
+			log_message.emit("Player live movement started.")
+		last_player_live_movement_active = player_live_movement_active
+	if enemy_approach_active != last_enemy_approach_active:
+		if enemy_approach_active:
+			log_message.emit("Enemy approaching.")
+		last_enemy_approach_active = enemy_approach_active
+
+func _movement_mode_text() -> String:
+	if reaction_window_active:
+		return "Reaction Locked"
+	if queue_resolver != null and queue_resolver.resolving:
+		return "Committed Queue"
+	if slow_neutral_active:
+		return "Live Slow Neutral"
+	if frame_advantage > 0:
+		return "Frame-Costed Pressure"
+	return "Locked"
+
+func _time_mode_text() -> String:
+	if reaction_window_active:
+		return "Reaction Slow"
+	if slow_neutral_active:
+		return "Slow Neutral"
+	if can_play_cards():
+		return "Player Choice Slow"
+	return "Normal"
+
+func startup_frames_to_reaction_seconds(startup_frames: int) -> float:
+	return clampf(0.45 + float(startup_frames) * 0.28, 1.0, 5.0)
+
+func _start_reaction_window(intent: String, startup_frames: int) -> void:
+	reaction_window_active = true
+	reaction_window_resolving = false
+	reaction_total_seconds = startup_frames_to_reaction_seconds(startup_frames)
+	reaction_remaining_seconds = reaction_total_seconds
+	_reset_reaction_guard_state()
+	impact_resolution_text = "Pending"
+	log_message.emit("Reaction window started: %s, %.1fs." % [intent, reaction_total_seconds])
+
+func _tick_reaction_window(delta: float) -> void:
+	if not reaction_window_active or reaction_window_resolving or not waiting_for_defense:
+		return
+	var real_delta := delta / maxf(Engine.time_scale, 0.001)
+	reaction_remaining_seconds = maxf(0.0, reaction_remaining_seconds - real_delta)
+	var progress := _reaction_progress()
+	var elapsed_startup_frames := int(floor(float(enemy_effective_startup_frame) * progress))
+	remaining_startup_frames = maxi(0, enemy_effective_startup_frame - elapsed_startup_frames)
+	_update_live_reaction_guard(elapsed_startup_frames, real_delta)
+	if combat_timeline != null:
+		combat_timeline.set_startup_progress(progress)
+		_show_enemy_timeline_phase()
+	if reaction_remaining_seconds <= 0.0:
+		reaction_window_resolving = true
+		call_deferred("_resolve_reaction_impact")
+
+func _reaction_progress() -> float:
+	if reaction_total_seconds <= 0.0:
+		return 0.0
+	return clampf(1.0 - (reaction_remaining_seconds / reaction_total_seconds), 0.0, 1.0)
+
+func _perfect_block_window_active() -> bool:
+	return reaction_window_active and _reaction_progress() >= PERFECT_BLOCK_REACTION_PROGRESS
+
+func _reset_reaction_guard_state() -> void:
+	selected_defense_type = ""
+	defense_input_progress = -1.0
+	current_guard_input = ""
+	guard_start_elapsed_frame = -1
+	guard_startup_frames_remaining = 0
+	guard_active = false
+	correct_defense_became_active_progress = -1.0
+
+func _update_live_reaction_guard(elapsed_startup_frames: int, real_delta: float) -> void:
+	var live_guard := _current_live_guard_input()
+	if live_guard == "":
+		if current_guard_input != "":
+			log_message.emit("Guard released.")
+		current_guard_input = ""
+		selected_defense_type = ""
+		defense_input_progress = -1.0
+		guard_start_elapsed_frame = -1
+		guard_startup_frames_remaining = 0
+		guard_active = false
+		correct_defense_became_active_progress = -1.0
+		return
+
+	if live_guard != current_guard_input:
+		current_guard_input = live_guard
+		selected_defense_type = live_guard
+		defense_input_progress = _reaction_progress()
+		guard_start_elapsed_frame = elapsed_startup_frames
+		guard_startup_frames_remaining = REACTION_GUARD_STARTUP_FRAMES
+		guard_active = false
+		correct_defense_became_active_progress = -1.0
+		log_message.emit("Guard startup began.")
+		log_message.emit("Defense selected: %s at %d%%." % [_defense_display_name(live_guard), int(round(defense_input_progress * 100.0))])
+
+	if guard_start_elapsed_frame >= 0:
+		guard_startup_frames_remaining = maxf(0.0, guard_startup_frames_remaining - real_delta * 60.0)
+		if not guard_active and guard_startup_frames_remaining <= 0:
+			guard_active = true
+			correct_defense_became_active_progress = _reaction_progress()
+			log_message.emit("%s active." % ("Low block" if current_guard_input == "crouch_block" else "Stand block"))
+
+	if guard_active:
+		player.show_timeline_phase(current_guard_input, "ACTIVE", 1.0, current_enemy_intent, false)
+	elif current_guard_input != "":
+		var startup_progress := 1.0 - (float(guard_startup_frames_remaining) / float(REACTION_GUARD_STARTUP_FRAMES))
+		player.show_timeline_phase(current_guard_input, "STARTUP", startup_progress, current_enemy_intent, false)
+
+func _current_live_guard_input() -> String:
+	if not Input.is_key_pressed(KEY_J):
+		return ""
+	return "crouch_block" if Input.is_key_pressed(KEY_S) else "block"
+
+func _resolve_reaction_impact() -> void:
+	if combat_over or not waiting_for_defense:
+		reaction_window_active = false
+		reaction_window_resolving = false
+		return
+	reaction_window_active = false
+	remaining_startup_frames = 0
+	if not guard_active or selected_defense_type == "":
+		await _resolve_reaction_no_defense()
 	else:
-		log_message.emit("Enemy defensive reaction: waited.")
-	_schedule_enemy_if_needed()
+		await _resolve_reaction_block(selected_defense_type, defense_input_progress)
+	reaction_window_resolving = false
 
 func _resolve_enemy_intent(defense_type: String) -> void:
 	if combat_over or not waiting_for_defense:
@@ -476,8 +746,74 @@ func _resolve_block_after_startup(defense_type: String, startup_after_block: int
 
 	await _finish_enemy_resolution_after_recovery()
 
+func _resolve_reaction_no_defense() -> void:
+	_begin_enemy_resolution()
+	var result: Dictionary = enemy.resolve_attack()
+	if result.is_empty():
+		_finish_enemy_resolution()
+		return
+
+	_set_enemy_attack_hitbox(_make_enemy_attack_hitbox(result))
+	var enemy_attack_hits := last_enemy_attack_hitbox.intersects(get_player_hurtbox())
+	if not enemy_attack_hits:
+		log_message.emit("Enemy attack whiffed due to spacing.")
+		log_message.emit("Impact resolved: whiff.")
+		impact_resolution_text = "Whiff"
+		_reset_pressure_sequence()
+		_change_frame_advantage(1)
+	else:
+		player.take_damage(result["damage"])
+		_set_frame_advantage_to_neutral()
+		log_message.emit("Impact resolved: hit.")
+		impact_resolution_text = "Hit"
+	await _finish_enemy_resolution_after_recovery()
+
+func _resolve_reaction_block(defense_type: String, input_progress: float) -> void:
+	_begin_enemy_resolution()
+	var result: Dictionary = enemy.resolve_attack()
+	if result.is_empty():
+		_finish_enemy_resolution()
+		return
+
+	_set_enemy_attack_hitbox(_make_enemy_attack_hitbox(result))
+	var enemy_attack_hits := last_enemy_attack_hitbox.intersects(get_player_hurtbox())
+	if not enemy_attack_hits or _enemy_attack_whiffs_against_defense(defense_type, result):
+		log_message.emit("Enemy attack whiffed due to spacing.")
+		log_message.emit("Impact resolved: whiff.")
+		impact_resolution_text = "Whiff"
+		_reset_pressure_sequence()
+		_change_frame_advantage(1)
+	elif _defense_answers_attack(defense_type, result):
+		if input_progress >= PERFECT_BLOCK_REACTION_PROGRESS:
+			_reset_pressure_sequence()
+			_change_frame_advantage(4)
+			_log_stance_protection(15)
+			stance_system.apply_block_stance_damage(15)
+			log_message.emit("Perfect block window hit.")
+			log_message.emit("PERFECT BLOCK")
+			log_message.emit("Stance damage dealt: 15.")
+			log_message.emit("Impact resolved: perfect block.")
+			impact_resolution_text = "Perfect Block"
+			player.show_state("PERFECT BLOCK", Color.GOLD)
+			await _run_perfect_block_hitstop()
+		else:
+			_reset_pressure_sequence()
+			_change_frame_advantage(2)
+			log_message.emit("Normal block: too early for perfect.")
+			log_message.emit("Impact resolved: normal block.")
+			impact_resolution_text = "Normal Block"
+	else:
+		player.take_damage(result["damage"])
+		_set_frame_advantage_to_neutral()
+		log_message.emit("Defense failed.")
+		log_message.emit("Impact resolved: hit.")
+		impact_resolution_text = "Hit"
+
+	await _finish_enemy_resolution_after_recovery()
+
 func _begin_enemy_resolution() -> void:
 	waiting_for_defense = false
+	reaction_window_active = false
 	Engine.time_scale = 1.0
 	combat_timeline.mark_active()
 	_show_enemy_timeline_phase()
@@ -494,7 +830,7 @@ func _finish_enemy_resolution() -> void:
 	enemy_effective_startup_frame = 0
 	remaining_startup_frames = 0
 	_update_time_scale()
-	_schedule_enemy_if_needed()
+	_enter_slow_neutral("Slow neutral movement started.")
 
 func _finish_enemy_resolution_after_recovery() -> void:
 	combat_timeline.mark_recovery()
@@ -547,6 +883,8 @@ func end_player_pressure(reason: String, initiative_result := 0) -> void:
 	enemy_vulnerable_frames_remaining = 0
 	queue_resolver.clear()
 	waiting_for_defense = false
+	reaction_window_active = false
+	reaction_window_resolving = false
 	attack_in_progress = false
 	current_enemy_intent = ""
 	enemy_base_startup_frame = 0
@@ -561,7 +899,7 @@ func end_player_pressure(reason: String, initiative_result := 0) -> void:
 	frame_advantage_changed.emit(frame_advantage)
 	if reason != "":
 		log_message.emit(reason)
-	_schedule_enemy_if_needed()
+	_enter_slow_neutral("Slow neutral movement started.")
 
 func _run_perfect_block_hitstop() -> void:
 	Engine.time_scale = 0.03
@@ -574,6 +912,8 @@ func _try_interrupt_with_card(index: int) -> void:
 		log_message.emit("Card not playable.")
 		return
 
+	reaction_window_active = false
+	reaction_window_resolving = false
 	var card: Resource = deck_manager.hand[index]
 	last_player_action_startup = int(card.startup_frame)
 	_begin_player_card_timeline(card)
@@ -634,6 +974,8 @@ func _try_interrupt_with_card(index: int) -> void:
 	_resolve_player_card(card, 2, false)
 
 func _try_interrupt_with_card_snapshot(snapshot: Dictionary) -> void:
+	reaction_window_active = false
+	reaction_window_resolving = false
 	var card: Resource = _card_from_snapshot(snapshot)
 	last_player_action_startup = int(card.startup_frame)
 	_begin_player_card_timeline(card)
@@ -747,6 +1089,7 @@ func _resolve_intent_trade_snapshot(snapshot: Dictionary, preview_card: Resource
 
 func _resolve_enemy_counter_hit(counter_hit := true) -> void:
 	waiting_for_defense = false
+	reaction_window_active = false
 	Engine.time_scale = 1.0
 	frame_advantage_changed.emit(frame_advantage)
 	if remaining_startup_frames > 0:
@@ -756,7 +1099,7 @@ func _resolve_enemy_counter_hit(counter_hit := true) -> void:
 		attack_in_progress = false
 		player.set_free_movement_enabled(false)
 		_update_time_scale()
-		_schedule_enemy_if_needed()
+		_enter_slow_neutral("Slow neutral movement started.")
 		return
 	var damage := int(result["counter_damage"])
 	_set_enemy_attack_hitbox(_make_enemy_attack_hitbox(result))
@@ -775,7 +1118,7 @@ func _resolve_enemy_counter_hit(counter_hit := true) -> void:
 	enemy_effective_startup_frame = 0
 	remaining_startup_frames = 0
 	_update_time_scale()
-	_schedule_enemy_if_needed()
+	_enter_slow_neutral("Slow neutral movement started.")
 
 func _apply_trade_frame_result(card: Resource) -> void:
 	queue_resolver.interrupted_by_trade = true
@@ -1196,7 +1539,7 @@ func _on_enemy_break_ended() -> void:
 		_reset_pressure_sequence()
 		frame_advantage_changed.emit(frame_advantage)
 		log_message.emit("Enemy recovered from stance break. Reset to neutral.")
-		_schedule_enemy_if_needed()
+		_enter_slow_neutral("Slow neutral movement started.")
 	else:
 		log_message.emit("Enemy recovered from stance break. Pressure continues.")
 	_update_time_scale()
@@ -1267,11 +1610,17 @@ func _refresh_combat_state() -> void:
 	if _is_enemy_broken():
 		combat_state = CombatFlowState.STANCE_BREAK
 		return
+	if reaction_window_active:
+		combat_state = CombatFlowState.REACTION_WINDOW
+		return
 	if waiting_for_defense:
 		combat_state = CombatFlowState.EXECUTING_QUEUE if queue_resolver != null and queue_resolver.resolving else CombatFlowState.ENEMY_INTENT
 		return
 	if frame_advantage > 0:
 		combat_state = CombatFlowState.EXECUTING_QUEUE if queue_resolver != null and queue_resolver.resolving else CombatFlowState.PLAYER_PRESSURE
+		return
+	if slow_neutral_active:
+		combat_state = CombatFlowState.SLOW_NEUTRAL
 		return
 	combat_state = CombatFlowState.NEUTRAL
 
@@ -1279,6 +1628,8 @@ func _combat_state_name(state_id: int) -> String:
 	match state_id:
 		CombatFlowState.NEUTRAL:
 			return "Neutral"
+		CombatFlowState.SLOW_NEUTRAL:
+			return "Slow Neutral"
 		CombatFlowState.PLANNING:
 			return "Planning"
 		CombatFlowState.EXECUTING_QUEUE:
@@ -1287,6 +1638,8 @@ func _combat_state_name(state_id: int) -> String:
 			return "Player Pressure"
 		CombatFlowState.ENEMY_INTENT:
 			return "Enemy Intent"
+		CombatFlowState.REACTION_WINDOW:
+			return "Reaction Window"
 		CombatFlowState.DEFENSE_REACTION:
 			return "Defense Reaction"
 		CombatFlowState.STANCE_BREAK:
@@ -1302,7 +1655,7 @@ func get_queue_text() -> String:
 	return queue_resolver.queue_text()
 
 func _is_tactical_mode() -> bool:
-	return not combat_over and (waiting_for_defense or _can_take_pressure_movement())
+	return not combat_over and not reaction_window_active and (waiting_for_defense or _can_take_pressure_movement())
 
 func _queue_tactical_action(action: Dictionary) -> void:
 	if not queue_resolver.append(action):
@@ -1330,6 +1683,13 @@ func _clear_tactical_queue() -> void:
 func _execute_or_wait_tactical_queue() -> void:
 	if queue_resolver.resolving:
 		return
+	if slow_neutral_active and queue_resolver.is_empty():
+		log_message.emit("No queued action. Keep moving or queue a card.")
+		return
+	if slow_neutral_active:
+		log_message.emit("Queue execution started.")
+		await _execute_slow_neutral_queue()
+		return
 	queue_resolver.resolving = true
 	queue_resolver.interrupted_by_trade = false
 	if queue_resolver.is_empty():
@@ -1352,6 +1712,30 @@ func _execute_or_wait_tactical_queue() -> void:
 		await _pause_between_queued_actions()
 	queue_resolver.resolving = false
 	if not _is_tactical_mode():
+		queue_resolver.clear()
+
+func _execute_slow_neutral_queue() -> void:
+	_exit_slow_neutral()
+	_run_enemy_attack(false)
+	if not waiting_for_defense:
+		queue_resolver.clear()
+		return
+	queue_resolver.resolving = true
+	queue_resolver.interrupted_by_trade = false
+	while not queue_resolver.is_empty() and waiting_for_defense and not combat_over:
+		var action: Dictionary = queue_resolver.pop_front()
+		await _resolve_queued_action(action)
+		frame_advantage_changed.emit(frame_advantage)
+		if queue_resolver.interrupted_by_trade:
+			log_message.emit("Queue stopped after trade.")
+			queue_resolver.clear()
+			break
+		await _pause_between_queued_actions()
+	queue_resolver.resolving = false
+	if waiting_for_defense and not reaction_window_active and not combat_over:
+		_start_reaction_window(current_enemy_intent, remaining_startup_frames)
+		_update_time_scale()
+	if not waiting_for_defense:
 		queue_resolver.clear()
 
 func _resolve_queued_action(action: Dictionary) -> void:
@@ -1389,8 +1773,10 @@ func _queued_action_from_key(keycode: Key) -> Dictionary:
 			return {"type": "BACKSTEP"}
 		KEY_J:
 			return {"type": "BLOCK"}
-		KEY_K:
-			return {"type": "CROUCH_BLOCK"}
+		KEY_S:
+			if Input.is_key_pressed(KEY_J):
+				return {"type": "CROUCH_BLOCK"}
+			return {}
 		KEY_SPACE:
 			if Input.is_key_pressed(KEY_D):
 				return {"type": "JUMP_FORWARD"}
@@ -1443,18 +1829,16 @@ func _pressure_movement_from_key(keycode: Key) -> String:
 func _schedule_enemy_if_needed() -> void:
 	if enemy_intent_scheduled or combat_over or attack_in_progress or waiting_for_defense or frame_advantage > 0 or punish_in_progress:
 		return
-	enemy_intent_scheduled = true
-	await get_tree().create_timer(0.3, true, false, true).timeout
-	enemy_intent_scheduled = false
-	if combat_over or player.hp <= 0 or enemy.hp <= 0:
-		return
-	if _current_mode() != "Neutral":
-		return
-	_run_enemy_attack()
+	_enter_slow_neutral("Slow neutral movement started.")
 
 func _update_time_scale() -> void:
 	if combat_over:
 		Engine.time_scale = 1.0
+		return
+
+	if slow_neutral_active:
+		player.set_free_movement_enabled(true)
+		Engine.time_scale = NEUTRAL_SLOW_TIME_SCALE
 		return
 
 	player.set_free_movement_enabled(false)
@@ -1466,6 +1850,8 @@ func _update_time_scale() -> void:
 func _end_combat(message: String) -> void:
 	combat_over = true
 	waiting_for_defense = false
+	reaction_window_active = false
+	reaction_window_resolving = false
 	attack_in_progress = false
 	punish_in_progress = false
 	enemy_intent_scheduled = false
@@ -1507,9 +1893,7 @@ func _defense_display_name(defense_type: String) -> String:
 func _defense_from_key(keycode: Key) -> String:
 	match keycode:
 		KEY_J:
-			return "block"
-		KEY_K:
-			return "crouch_block"
+			return "crouch_block" if Input.is_key_pressed(KEY_S) else "block"
 		KEY_L:
 			return "backstep"
 		KEY_SPACE:

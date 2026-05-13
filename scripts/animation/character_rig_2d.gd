@@ -79,7 +79,8 @@ func _pose_points() -> Dictionary:
 	var windup := phase == "STARTUP"
 	var active := phase == "ACTIVE" or phase == "IMPACT"
 	var recovery := phase == "RECOVERY"
-	var crouch := pose_key == "block_low"
+	var p := _phase_eased()
+	var crouch := false
 	var hitstun := pose_key == "hitstun"
 	var broken := pose_key == "stance_break"
 
@@ -110,6 +111,57 @@ func _pose_points() -> Dictionary:
 		back_hand = Vector2(-38.0 * f, -50.0)
 		front_foot = Vector2(8.0 * f, -2.0)
 		back_foot = Vector2(-30.0 * f, -2.0)
+
+	if pose_key == "mid_punch":
+		var extension := 88.0 * p
+		if windup:
+			torso.x += 8.0 * f * p
+			front_hand = Vector2(lerpf(22.0, -26.0, p) * f, -78.0)
+			back_hand = Vector2(-20.0 * f, -86.0)
+		elif active:
+			torso.x += 12.0 * f
+			front_hand = Vector2((36.0 + extension * 0.55) * f, -78.0)
+			back_hand = Vector2(-20.0 * f, -88.0)
+		elif recovery:
+			front_hand = Vector2(lerpf(72.0, 24.0, p) * f, -78.0)
+			torso.x += lerpf(12.0, 0.0, p) * f
+	elif pose_key == "high_hook":
+		if windup:
+			torso.x -= 12.0 * f * p
+			front_hand = Vector2(lerpf(24.0, -42.0, p) * f, lerpf(-78.0, -108.0, p))
+			back_hand = Vector2(-28.0 * f, -88.0)
+		elif active:
+			torso.x += 10.0 * f
+			front_hand = Vector2(lerpf(-12.0, 72.0, p) * f, -108.0)
+			back_hand = Vector2(-18.0 * f, -82.0)
+		elif recovery:
+			front_hand = Vector2(lerpf(72.0, 24.0, p) * f, lerpf(-108.0, -82.0, p))
+	elif pose_key == "low_sweep":
+		hip.y += 22.0
+		torso.y += 18.0
+		head.y += 16.0
+		back_hand = Vector2(-20.0 * f, -50.0)
+		if windup:
+			front_foot = Vector2(lerpf(18.0, -22.0, p) * f, -4.0)
+			front_hand = Vector2(18.0 * f, -52.0)
+		elif active:
+			front_foot = Vector2(lerpf(10.0, 86.0, p) * f, -6.0)
+			front_hand = Vector2(20.0 * f, -48.0)
+		elif recovery:
+			front_foot = Vector2(lerpf(86.0, 18.0, p) * f, -4.0)
+			front_hand = Vector2(24.0 * f, -58.0)
+	elif pose_key == "overhead_smash":
+		if windup:
+			torso.x -= 8.0 * f * p
+			front_hand = Vector2(lerpf(24.0, -12.0, p) * f, lerpf(-78.0, -154.0, p))
+			back_hand = Vector2(8.0 * f, -122.0)
+		elif active:
+			torso.x += 18.0 * f
+			front_hand = Vector2(lerpf(-4.0, 66.0, p) * f, lerpf(-148.0, -50.0, p))
+			back_hand = Vector2(-10.0 * f, -102.0)
+		elif recovery:
+			front_hand = Vector2(lerpf(66.0, 24.0, p) * f, lerpf(-50.0, -78.0, p))
+			torso.x += lerpf(18.0, 0.0, p) * f
 
 	if pose_key.begins_with("jab") or pose_key == "gunshot":
 		if windup:
@@ -144,11 +196,19 @@ func _pose_points() -> Dictionary:
 		front_foot = Vector2(8.0 * f, -2.0)
 		back_foot = Vector2(-42.0 * f, -2.0)
 	if pose_key == "block_high":
-		front_hand = Vector2(28.0 * f, -100.0)
-		back_hand = Vector2(18.0 * f, -76.0)
+		hip.x -= 4.0 * f * p
+		torso.x -= 8.0 * f * p
+		front_hand = Vector2(lerpf(24.0, 28.0, p) * f, lerpf(-78.0, -100.0, p))
+		back_hand = Vector2(lerpf(-18.0, 18.0, p) * f, lerpf(-76.0, -76.0, p))
+	if pose_key == "block_low":
+		hip.y += 18.0 * p
+		torso.y += 18.0 * p
+		head.y += 16.0 * p
+		front_hand = Vector2(lerpf(24.0, 28.0, p) * f, lerpf(-78.0, -54.0, p))
+		back_hand = Vector2(lerpf(-18.0, -16.0, p) * f, lerpf(-76.0, -52.0, p))
 
 	var socket := front_hand
-	if pose_key.begins_with("kick") or pose_key == "air_follow" or pose_key == "ground_smash":
+	if pose_key.begins_with("kick") or pose_key == "air_follow" or pose_key == "ground_smash" or pose_key == "low_sweep":
 		socket = front_foot
 
 	return {
@@ -170,12 +230,21 @@ func _socket_hitbox_rect(points: Dictionary) -> Rect2:
 	var socket: Vector2 = points["weapon_socket"]
 	var size := Vector2(58.0, 34.0)
 	if hit_level == "LOW":
-		size = Vector2(64.0, 24.0)
+		socket = points["foot_socket"] + Vector2(12.0 * (1.0 if facing >= 0.0 else -1.0), 0.0)
+		size = Vector2(86.0, 24.0)
 	elif hit_level == "OVERHEAD":
-		size = Vector2(62.0, 56.0)
+		socket = points["hand_socket"] + Vector2(10.0 * (1.0 if facing >= 0.0 else -1.0), -8.0)
+		size = Vector2(72.0, 72.0)
 	elif hit_level == "HIGH":
-		size = Vector2(58.0, 30.0)
+		socket = points["hand_socket"]
+		size = Vector2(78.0, 34.0)
+	elif hit_level == "MID":
+		socket = points["hand_socket"]
+		size = Vector2(84.0, 38.0)
 	return Rect2(socket - size * 0.5, size)
+
+func _phase_eased() -> float:
+	return phase_progress * phase_progress * (3.0 - 2.0 * phase_progress)
 
 func _update_sockets() -> void:
 	var points := _pose_points()
