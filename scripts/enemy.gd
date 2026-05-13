@@ -9,24 +9,20 @@ signal break_started
 signal break_ended
 
 const CombatAnimationDriver := preload("res://scripts/animation/combat_animation_driver.gd")
+const EnemyMoveData := preload("res://scripts/enemy/enemy_move_data.gd")
+const EnemyStanceConfig := preload("res://scripts/enemy/enemy_stance_config.gd")
 
 enum State { IDLE, TELEGRAPH, ATTACK, BREAK }
 enum StanceState { NORMAL, BROKEN_HITSTUN, BROKEN_BLOCKSTUN, RECOVERING_PROTECTED }
 enum DecisionState { NEUTRAL, BLOCKING, PUNISHING, PRESSURING, MASHING, RECOVERING, STUNNED, STANCE_BROKEN, DEFENSIVE_REACTION }
 
-const STANCE_BREAK_HITSTUN_FRAMES := 45
-const STANCE_BREAK_BLOCK_RECOVERY_FRAMES := 30
-const STANCE_PROTECTION_RECOVERY_FRAMES := 30
-
-const ATTACKS := {
-	"HIGH": {"id": "HIGH", "name": "High Check", "damage": 14, "stance_damage": 0, "startup": 6, "startup_frame": 6, "active": 3, "recovery": 14, "range_min": 0.0, "range_max": 80.0, "range": 80.0, "counter_damage": 18, "hit_level": "HIGH", "on_hit_adv": 1, "on_block_adv": -2, "hitbox_width": 85.0, "hitbox_height": 45.0, "hitbox_offset_y": -65.0, "tags": ["fast", "anti_air"], "ai_use_case": ["fast_punish", "anti_air", "mash"]},
-	"MID": {"id": "MID", "name": "Mid Strike", "damage": 12, "stance_damage": 0, "startup": 9, "startup_frame": 9, "active": 3, "recovery": 16, "range_min": 0.0, "range_max": 90.0, "range": 90.0, "counter_damage": 16, "hit_level": "MID", "on_hit_adv": 1, "on_block_adv": -1, "hitbox_width": 95.0, "hitbox_height": 55.0, "hitbox_offset_y": -40.0, "tags": ["poke"], "ai_use_case": ["poke", "pressure_starter", "fast_punish"]},
-	"LOW": {"id": "LOW", "name": "Low Check", "damage": 10, "stance_damage": 0, "startup": 10, "startup_frame": 10, "active": 3, "recovery": 17, "range_min": 0.0, "range_max": 75.0, "range": 75.0, "counter_damage": 14, "hit_level": "LOW", "on_hit_adv": 1, "on_block_adv": -3, "hitbox_width": 85.0, "hitbox_height": 35.0, "hitbox_offset_y": -15.0, "tags": ["low"], "ai_use_case": ["low_check", "pressure_starter"]},
-	"OVERHEAD": {"id": "OVERHEAD", "name": "Overhead Starter", "damage": 16, "stance_damage": 0, "startup": 15, "startup_frame": 15, "active": 4, "recovery": 22, "range_min": 0.0, "range_max": 85.0, "range": 85.0, "counter_damage": 22, "hit_level": "OVERHEAD", "on_hit_adv": 3, "on_block_adv": -6, "hitbox_width": 100.0, "hitbox_height": 75.0, "hitbox_offset_y": -70.0, "tags": ["slow", "starter"], "ai_use_case": ["overhead", "pressure_starter", "stance_breaker"]}
-}
+const STANCE_BREAK_HITSTUN_FRAMES := EnemyStanceConfig.BREAK_HITSTUN_FRAMES
+const STANCE_BREAK_BLOCK_RECOVERY_FRAMES := EnemyStanceConfig.BREAK_BLOCK_RECOVERY_FRAMES
+const STANCE_PROTECTION_RECOVERY_FRAMES := EnemyStanceConfig.PROTECTION_RECOVERY_FRAMES
+const ATTACKS := EnemyMoveData.ATTACKS
 
 @export var max_hp := 120
-@export var max_stance := 100
+@export var max_stance := EnemyStanceConfig.MAX_STANCE
 @export var hurtbox_width := 50.0
 @export var hurtbox_height := 90.0
 @export var punish_startup := 5

@@ -111,32 +111,19 @@ A key design goal is to avoid exposing raw frame numbers during normal play. Ins
 
 Current prototype controls may change during development.
 
-### Movement
-
-| Input | Action |
-|---|---|
-| `A / D` | Move |
-| `Space` | Jump |
-| `L` | Backstep |
-
-### Defense
-
-| Input | Action |
-|---|---|
-| `J` | Block |
-| `K` | Crouch block |
-
-### Combat
-
-| Input | Action |
-|---|---|
-| Mouse | Select cards / queue actions |
-
-### Debug
-
-| Input | Action |
-|---|---|
-| `F1-F4` | Toggle debug panels |
+| Category | Input | Action |
+| :--- | :--- | :--- |
+| Movement | `A` / `D` | Move or queue step actions during tactical combat |
+| Movement | `Space` | Jump / neutral jump / jump-in movement |
+| Movement | `L` | Backstep |
+| Defense | `J` | Block |
+| Defense | `K` | Crouch block |
+| Combat | Mouse | Select cards / queue actions |
+| Combat | `1`-`4` | Queue or play hand cards |
+| Combat | `E` | Execute queued tactical actions / end turn |
+| Combat | `Backspace` | Remove last queued action |
+| Combat | `C` | Clear action queue |
+| Debug | `F1`-`F4` | Toggle debug panels |
 
 ---
 

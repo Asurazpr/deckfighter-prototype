@@ -4,6 +4,8 @@ extends Node
 signal frame_advantage_changed(value: int)
 signal log_message(message: String)
 
+enum CombatFlowState { NEUTRAL, PLANNING, EXECUTING_QUEUE, PLAYER_PRESSURE, ENEMY_INTENT, DEFENSE_REACTION, STANCE_BREAK, PUNISH, GAME_OVER }
+
 const ATTACK_RECOVERY := 0.35
 const PLAYER_CHOICE_TIME_SCALE := 0.2
 const ENEMY_INTENT_TIME_SCALE := 0.15
@@ -42,6 +44,7 @@ var waiting_for_defense := false
 var combat_over := false
 var punish_in_progress := false
 var enemy_intent_scheduled := false
+var combat_state := CombatFlowState.NEUTRAL
 var current_enemy_intent := ""
 var enemy_base_startup_frame := 0
 var enemy_effective_startup_frame := 0
@@ -1249,17 +1252,51 @@ func _is_interrupt_card_index(index: int) -> bool:
 	return _card_has_tag(card, "interrupt") or _card_has_tag(card, "starter")
 
 func _current_mode() -> String:
+	_refresh_combat_state()
+	return _combat_state_name(combat_state)
+
+func _refresh_combat_state() -> void:
+	# TODO: Promote this derived enum into the authoritative combat state machine
+	# once the remaining legacy mode flags have been untangled.
 	if combat_over:
-		return "Game Over"
+		combat_state = CombatFlowState.GAME_OVER
+		return
 	if punish_in_progress:
-		return "Punish"
+		combat_state = CombatFlowState.PUNISH
+		return
 	if _is_enemy_broken():
-		return "Stance Break"
+		combat_state = CombatFlowState.STANCE_BREAK
+		return
 	if waiting_for_defense:
-		return "Enemy Intent"
+		combat_state = CombatFlowState.EXECUTING_QUEUE if queue_resolver != null and queue_resolver.resolving else CombatFlowState.ENEMY_INTENT
+		return
 	if frame_advantage > 0:
-		return "Player Pressure"
-	return "Neutral"
+		combat_state = CombatFlowState.EXECUTING_QUEUE if queue_resolver != null and queue_resolver.resolving else CombatFlowState.PLAYER_PRESSURE
+		return
+	combat_state = CombatFlowState.NEUTRAL
+
+func _combat_state_name(state_id: int) -> String:
+	match state_id:
+		CombatFlowState.NEUTRAL:
+			return "Neutral"
+		CombatFlowState.PLANNING:
+			return "Planning"
+		CombatFlowState.EXECUTING_QUEUE:
+			return "Executing Queue"
+		CombatFlowState.PLAYER_PRESSURE:
+			return "Player Pressure"
+		CombatFlowState.ENEMY_INTENT:
+			return "Enemy Intent"
+		CombatFlowState.DEFENSE_REACTION:
+			return "Defense Reaction"
+		CombatFlowState.STANCE_BREAK:
+			return "Stance Break"
+		CombatFlowState.PUNISH:
+			return "Punish"
+		CombatFlowState.GAME_OVER:
+			return "Game Over"
+		_:
+			return "Unknown"
 
 func get_queue_text() -> String:
 	return queue_resolver.queue_text()

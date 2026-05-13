@@ -6,7 +6,7 @@
 
 `CombatManagerCore` owns high-level match flow, input routing, state transitions, combat logs, UI-facing debug text, and coordination between systems. It should not become the home for new gameplay rules. When adding combat behavior, prefer placing the rule in the relevant system and keeping the manager as the caller/orchestrator.
 
-Current combat states are represented through the existing mode helpers: enemy intent, player pressure, stance break, punish, neutral, and game over. Future explicit state enum work should preserve the current debug labels and gameplay behavior.
+Current combat states are beginning to route through `CombatFlowState` in `CombatManagerCore`, while legacy flags still drive the actual flow. Future explicit state-machine work should preserve the current debug labels and gameplay behavior while making the enum authoritative.
 
 ## Systems
 
@@ -26,13 +26,15 @@ Current combat states are represented through the existing mode helpers: enemy i
 
 Future cards, moves, character kits, movement profiles, and rulesets should become data-driven. Avoid hardcoding new move-specific behavior in `CombatManagerCore`; prefer card/move definitions or system-level config that can later be loaded from external data.
 
+Enemy attack definitions now live in `scripts/enemy/enemy_move_data.gd`, and stance defaults live in `scripts/enemy/enemy_stance_config.gd`. `enemy.gd` still owns runtime enemy state for now, but new enemy move/timing config should be added through data-shaped enemy config files instead of inline runtime logic.
+
 Animation and timing should consume combat-frame data from the systems. Animation should not become the authority for combat logic timing. Placeholder combat visuals should read from `CombatTimeline`, while final animation/camera/focus-window work should keep `CombatClock` and combat rules as the source of truth.
 
 ## TODO Boundaries
 
-- Move stance rules/config out of `enemy.gd` into character kit data.
+- Continue moving stance rules/config from `enemy.gd` into character kit data.
 - Move card definitions, route tables, generated follow-ups, and repeat-decay tuning out of `DeckManager`/`RouteSystem` into data assets.
-- Move enemy move definitions and AI scoring weights into ruleset/character kit data.
+- Continue moving enemy move definitions and AI scoring weights into ruleset/character kit data.
 - Let later skins attach to `CharacterRig2D`, and let moves/character kits override animation keys, sockets, and procedural pose data.
 - Keep `NORMAL`, `ELITE`, and `BOSS` intent profiles data-shaped so they can become modded enemy definitions.
 - Keep debug UI stable while replacing implicit manager booleans with a clearer explicit state enum.
