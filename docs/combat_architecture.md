@@ -17,8 +17,10 @@ Current combat states are beginning to route through `CombatFlowState` in `Comba
 - `StanceSystem`: public stance facade for combat code. It forwards to `enemy.gd` for now, but callers should use this system for stance state, protection, break timers, and stance damage application.
 - `RouteSystem`: combo route reset, repeat-move decay, route helpers, and future follow-up/draw rules.
 - `MovementSystem`: duel spacing, step/backstep/jump movement, movement frame costs, and card spacing effects.
+- `MovementFlowSystem`: slow-neutral live movement, neutral time scale, live A/D repositioning, enemy approach movement, and movement-mode debug state.
 - `HitboxSystem`: hurtbox and attack hitbox construction, hit prediction, debug hitbox lifetimes, and future active collision-window hooks.
 - `TradeSystem`: trade recovery values and post-trade frame advantage calculation.
+- `ReactionWindowSystem`: slow-time reaction countdown, impact bar progress, live guard input tracking, guard startup state, and perfect-block timing windows.
 - `EnemyAISystem`: enemy decision state, tier/profile config, situation scoring, spacing checks, punish candidate selection, pressure reactions, boss phase hooks, and enemy intent choice.
 - `CharacterRig2D` / `CombatAnimationDriver`: placeholder stick-rig visuals and pose mapping for combat phases. These are visual consumers of timeline data only; they do not decide hits, damage, frame advantage, or timing.
 
