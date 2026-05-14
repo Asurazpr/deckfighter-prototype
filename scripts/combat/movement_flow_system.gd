@@ -1,6 +1,14 @@
 class_name MovementFlowSystem
 extends RefCounted
 
+const BASIC_STEP_STARTUP_FRAMES := 3.0
+const BASIC_STEP_TRAVEL_FRAMES := 8.0
+const BASIC_STEP_RECOVERY_FRAMES := 4.0
+const STEP_PHASE_IDLE := "DONE"
+const STEP_PHASE_STARTUP := "STARTUP"
+const STEP_PHASE_TRAVEL := "TRAVEL"
+const STEP_PHASE_RECOVERY := "RECOVERY"
+
 var manager: Node
 var player: Node2D
 var enemy: Node2D
@@ -19,6 +27,16 @@ var last_enemy_approach_active := false
 var elapsed := 0.0
 var last_distance := 0.0
 var distance_change_rate := 0.0
+var movement_phase := STEP_PHASE_IDLE
+var movement_frames_remaining := 0.0
+var movement_direction := 0.0
+var movement_locked := false
+var movement_pose := "idle"
+var enemy_movement_phase := STEP_PHASE_IDLE
+var enemy_movement_frames_remaining := 0.0
+var _frame_accumulator := 0.0
+var _logged_travel := false
+var _enemy_movement_logged := false
 
 func setup(
 	manager_ref: Node,
@@ -46,7 +64,9 @@ func enter(message := "") -> void:
 	active = true
 	elapsed = elapsed if was_active else 0.0
 	last_distance = movement_system.distance_between_fighters()
-	player.set_free_movement_enabled(true)
+	player.set_free_movement_enabled(false)
+	if player is CharacterBody2D:
+		player.velocity.x = 0.0
 	Engine.time_scale = neutral_time_scale
 	if message != "" and not was_active:
 		manager.log_message.emit(message)
@@ -58,16 +78,19 @@ func exit() -> void:
 		enemy_approach_active = false
 		last_player_live_movement_active = false
 		last_enemy_approach_active = false
+		_reset_player_step()
+		_reset_enemy_step()
 	player.set_free_movement_enabled(false)
 
 func tick(delta: float) -> Dictionary:
 	if not active:
 		return {"should_start_intent": false}
 	elapsed += delta
+	_advance_combat_time(delta)
 	var previous_distance := movement_system.distance_between_fighters()
 	player_live_movement_active = Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_D)
-	_apply_player_movement(delta)
-	_apply_enemy_movement(delta)
+	_tick_player_step(delta)
+	_tick_enemy_approach_step(delta)
 	movement_system.clamp_duel_distance()
 	var current_distance := movement_system.distance_between_fighters()
 	distance_change_rate = (current_distance - previous_distance) / maxf(delta, 0.001)
@@ -99,11 +122,7 @@ func time_mode_text(reaction_active: bool, can_play_cards_now: bool) -> String:
 	return "Normal"
 
 func _apply_player_movement(real_delta: float) -> void:
-	var direction := 0.0
-	if Input.is_key_pressed(KEY_A):
-		direction -= 1.0
-	if Input.is_key_pressed(KEY_D):
-		direction += 1.0
+	var direction := _input_direction()
 	if direction == 0.0:
 		return
 	player.global_position.x += direction * player_speed * real_delta
@@ -113,6 +132,124 @@ func _apply_enemy_movement(real_delta: float) -> void:
 	if not enemy_approach_active:
 		return
 	enemy.global_position.x += movement_system.direction_to_player() * enemy_speed * real_delta
+
+func _tick_player_step(real_delta: float) -> void:
+	var held_direction := _input_direction()
+	if movement_phase == STEP_PHASE_IDLE:
+		if held_direction != 0.0:
+			_start_player_step(held_direction)
+		else:
+			_show_player_idle_pose()
+		return
+
+	var frames := real_delta * 60.0
+	if movement_phase == STEP_PHASE_TRAVEL:
+		player.global_position.x += movement_direction * player_speed * real_delta
+	movement_frames_remaining = maxf(0.0, movement_frames_remaining - frames)
+	_show_player_step_pose()
+	if movement_frames_remaining > 0.0:
+		return
+
+	match movement_phase:
+		STEP_PHASE_STARTUP:
+			movement_phase = STEP_PHASE_TRAVEL
+			movement_frames_remaining = BASIC_STEP_TRAVEL_FRAMES
+			_logged_travel = false
+			manager.log_message.emit("Step travel.")
+		STEP_PHASE_TRAVEL:
+			movement_phase = STEP_PHASE_RECOVERY
+			movement_frames_remaining = BASIC_STEP_RECOVERY_FRAMES
+		STEP_PHASE_RECOVERY:
+			manager.log_message.emit("Step recovered.")
+			_reset_player_step()
+			if held_direction != 0.0:
+				_start_player_step(held_direction)
+
+func _start_player_step(direction: float) -> void:
+	movement_direction = direction
+	movement_phase = STEP_PHASE_STARTUP
+	movement_frames_remaining = BASIC_STEP_STARTUP_FRAMES
+	movement_locked = true
+	_logged_travel = false
+	movement_pose = _movement_pose_for_direction(direction)
+	manager.log_message.emit("%s started." % ("Step forward" if movement_pose == "step_forward" else "Step back"))
+	_show_player_step_pose()
+
+func _tick_enemy_approach_step(real_delta: float) -> void:
+	enemy_approach_active = movement_system.distance_between_fighters() > intent_range
+	if not enemy_approach_active:
+		if _enemy_movement_logged:
+			manager.log_message.emit("Enemy movement animation stopped.")
+			manager.log_message.emit("Enemy returned to guard pose.")
+			if enemy != null and enemy.has_method("clear_timeline_visual"):
+				enemy.clear_timeline_visual()
+			_enemy_movement_logged = false
+		_reset_enemy_step()
+		return
+	if enemy_movement_phase == STEP_PHASE_IDLE:
+		enemy_movement_phase = STEP_PHASE_TRAVEL
+		enemy_movement_frames_remaining = BASIC_STEP_TRAVEL_FRAMES
+		if not _enemy_movement_logged:
+			manager.log_message.emit("Enemy movement animation started.")
+			_enemy_movement_logged = true
+	var frames := real_delta * 60.0
+	if enemy_movement_phase == STEP_PHASE_TRAVEL:
+		enemy.global_position.x += movement_system.direction_to_player() * enemy_speed * real_delta
+		_show_actor_pose(enemy, "walk_forward", "ACTIVE", 1.0 - enemy_movement_frames_remaining / BASIC_STEP_TRAVEL_FRAMES)
+	enemy_movement_frames_remaining = maxf(0.0, enemy_movement_frames_remaining - frames)
+	if enemy_movement_frames_remaining <= 0.0:
+		enemy_movement_frames_remaining = BASIC_STEP_TRAVEL_FRAMES
+
+func _input_direction() -> float:
+	var direction := 0.0
+	if Input.is_key_pressed(KEY_A):
+		direction -= 1.0
+	if Input.is_key_pressed(KEY_D):
+		direction += 1.0
+	return clampf(direction, -1.0, 1.0)
+
+func _movement_pose_for_direction(direction: float) -> String:
+	return "step_forward" if signf(direction) == signf(movement_system.direction_to_enemy()) else "backstep"
+
+func _show_player_step_pose() -> void:
+	var phase_name := "STARTUP"
+	var phase_total := BASIC_STEP_STARTUP_FRAMES
+	if movement_phase == STEP_PHASE_TRAVEL:
+		phase_name = "ACTIVE"
+		phase_total = BASIC_STEP_TRAVEL_FRAMES
+	elif movement_phase == STEP_PHASE_RECOVERY:
+		phase_name = "RECOVERY"
+		phase_total = BASIC_STEP_RECOVERY_FRAMES
+	var progress := 1.0 - movement_frames_remaining / maxf(1.0, phase_total)
+	_show_actor_pose(player, movement_pose, phase_name, progress)
+
+func _show_player_idle_pose() -> void:
+	if player != null and player.has_method("clear_timeline_visual"):
+		player.clear_timeline_visual()
+
+func _show_actor_pose(actor: Node, action_name: String, phase_name: String, progress: float) -> void:
+	if actor != null and actor.has_method("show_timeline_phase"):
+		actor.show_timeline_phase(action_name, phase_name, clampf(progress, 0.0, 1.0), "", false)
+
+func _reset_player_step() -> void:
+	movement_phase = STEP_PHASE_IDLE
+	movement_frames_remaining = 0.0
+	movement_direction = 0.0
+	movement_locked = false
+	movement_pose = "idle"
+
+func _reset_enemy_step() -> void:
+	enemy_movement_phase = STEP_PHASE_IDLE
+	enemy_movement_frames_remaining = 0.0
+
+func _advance_combat_time(delta: float) -> void:
+	_frame_accumulator += delta * 60.0
+	var whole_frames := int(floor(_frame_accumulator))
+	if whole_frames <= 0:
+		return
+	_frame_accumulator -= float(whole_frames)
+	if manager != null and manager.has_method("advance_combat_frames"):
+		manager.advance_combat_frames(whole_frames, false, true)
 
 func _log_state_changes() -> void:
 	if player_live_movement_active != last_player_live_movement_active:

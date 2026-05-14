@@ -65,6 +65,8 @@ var last_player_attack_hitbox := Rect2()
 var last_enemy_attack_hitbox := Rect2()
 var player_attack_hitbox_lifetime := 0.0
 var enemy_attack_hitbox_lifetime := 0.0
+var combat_frame_context := ""
+var combat_trace_events: Array[Dictionary] = []
 var combat_clock
 var frame_system
 var queue_resolver
@@ -174,7 +176,7 @@ func get_main_hud_debug_text() -> String:
 	]
 
 func get_timing_debug_text() -> String:
-	return "Enemy base startup: %d\nEnemy effective startup: %d\nEnemy remaining startup: %d\nLast player startup: %d\nEnemy vulnerable frames: %d\nInitiative Offset: %s\nStance State: %s\nStance Recovery Frames: %d\nStance Break Stun Remaining: %d\nStance Protected: %s\nMovement Mode: %s\nTime Mode: %s\nCurrent Time Scale: %.2f\nPlayer Live Movement Active: %s\nEnemy Approach Active: %s\nDistance Change Rate: %.1f px/s\nReaction Defense Mode: LIVE\nReaction Window Active: %s\nReaction Total Seconds: %.2f\nReaction Remaining Seconds: %.2f\nReaction Progress: %d%%\nCurrent Guard Input: %s\nGuard Startup Frames Remaining: %d\nGuard Active: %s\nCorrect Defense Became Active At: %s\nDefense Input Progress: %s\nPerfect Window Active: %s\nImpact Resolution: %s\n%s\nEnemy incoming hit level: %s" % [
+	return "Enemy base startup: %d\nEnemy effective startup: %d\nEnemy remaining startup: %d\nLast player startup: %d\nEnemy vulnerable frames: %d\nInitiative Offset: %s\nStance State: %s\nStance Recovery Frames: %d\nStance Break Stun Remaining: %d\nStance Protected: %s\nMovement Mode: %s\nTime Mode: %s\nCurrent Time Scale: %.2f\nPlayer Live Movement Active: %s\nEnemy Approach Active: %s\nDistance Change Rate: %.1f px/s\nCurrent Movement Phase: %s\nMovement Frames Remaining: %d\nMovement Direction: %s\nMovement Locked: %s\nCurrent Animation Pose: %s\nReaction Defense Mode: LIVE\nReaction Choice: %s\nReaction Window Active: %s\nReaction Total Seconds: %.2f\nReaction Remaining Seconds: %.2f\nReaction Progress: %d%%\nCurrent Guard Input: %s\nGuard Startup Frames Remaining: %d\nGuard Active: %s\nJump Startup Frames Remaining: %d\nJump Airborne: %s\nCorrect Defense Became Active At: %s\nDefense Input Progress: %s\nPerfect Window Active: %s\nImpact Resolution: %s\n%s\nEnemy incoming hit level: %s" % [
 		enemy_base_startup_frame,
 		enemy_effective_startup_frame,
 		remaining_startup_frames,
@@ -191,6 +193,12 @@ func get_timing_debug_text() -> String:
 		str(movement_flow_system.player_live_movement_active),
 		str(movement_flow_system.enemy_approach_active),
 		movement_flow_system.distance_change_rate,
+		movement_flow_system.movement_phase,
+		int(ceil(movement_flow_system.movement_frames_remaining)),
+		_movement_direction_text(movement_flow_system.movement_direction),
+		str(movement_flow_system.movement_locked),
+		movement_flow_system.movement_pose,
+		reaction_window_system.reaction_choice,
 		str(reaction_window_system.active),
 		reaction_window_system.total_seconds,
 		reaction_window_system.remaining_seconds,
@@ -198,6 +206,8 @@ func get_timing_debug_text() -> String:
 		_defense_display_name(reaction_window_system.current_guard_input) if reaction_window_system.current_guard_input != "" else "None",
 		int(ceil(reaction_window_system.guard_startup_frames_remaining)),
 		str(reaction_window_system.guard_active),
+		int(ceil(reaction_window_system.jump_startup_frames_remaining)),
+		str(reaction_window_system.jump_active),
 		("%d%%" % int(round(reaction_window_system.correct_defense_became_active_progress * 100.0))) if reaction_window_system.correct_defense_became_active_progress >= 0.0 else "None",
 		("%d%%" % int(round(reaction_window_system.defense_input_progress * 100.0))) if reaction_window_system.defense_input_progress >= 0.0 else "None",
 		str(_perfect_block_window_active()),
@@ -208,6 +218,128 @@ func get_timing_debug_text() -> String:
 
 func get_enemy_ai_debug_text() -> String:
 	return enemy_ai_system.debug_text()
+
+func get_combat_log_export_context() -> Dictionary:
+	return {
+		"timestamp": Time.get_datetime_string_from_system(),
+		"combat_state": _current_mode(),
+		"frame_advantage": frame_advantage,
+		"distance": _distance_between_fighters(),
+		"player_animation": _animation_debug_for(player, "player"),
+		"enemy_animation": _animation_debug_for(enemy, "enemy"),
+		"reaction": _reaction_export_data(),
+		"movement": _movement_export_data(),
+		"enemy_ai": enemy_ai_system.debug_text(),
+		"enemy_ai_state": enemy_ai_system.last_state,
+		"enemy_ai_action": enemy_ai_system.last_chosen_action,
+		"enemy_ai_reason": enemy_ai_system.last_reason,
+		"enemy_ai_score": enemy_ai_system.last_score,
+		"stance_state": stance_system.state_name(),
+		"stance_recovery_frames": stance_system.recovery_frames(),
+		"stance_break_stun_frames": stance_system.break_stun_frames(),
+		"stance_protected": stance_system.protected(),
+		"reaction_window_active": reaction_window_system.active,
+		"reaction_progress": reaction_window_system.progress(),
+		"reaction_choice": reaction_window_system.reaction_choice,
+		"reaction_remaining_seconds": reaction_window_system.remaining_seconds,
+		"enemy_intent": current_enemy_intent,
+		"enemy_remaining_startup": remaining_startup_frames,
+		"queue": get_queue_text()
+	}
+
+func get_combat_trace_events() -> Array:
+	return combat_trace_events.duplicate(true)
+
+func _record_combat_event(event_type: String, message := "", data := {}) -> void:
+	var event: Dictionary = data.duplicate(true)
+	event["event_type"] = event_type
+	event["timestamp"] = Time.get_datetime_string_from_system()
+	if message != "":
+		event["message"] = message
+	combat_trace_events.append(event)
+
+func _animation_debug_for(actor: Node, actor_name: String) -> Dictionary:
+	var data := {}
+	if actor != null and actor.has_method("get_animation_debug"):
+		data = actor.get_animation_debug()
+	else:
+		data = {
+			"animation_key": "unknown",
+			"pose_key": "unknown",
+			"action_name": "unknown",
+			"phase": "unknown",
+			"phase_progress": null,
+			"phase_frames_remaining": null,
+			"active_frame_window": "unknown",
+			"hitbox_active": null,
+			"current_pose_name": "unknown",
+			"movement_phase": "unknown",
+			"movement_direction": "unknown",
+			"rig_scale": null,
+			"facing": "unknown"
+		}
+	data["actor"] = actor_name
+	if actor_name == "player":
+		data["movement_phase"] = movement_flow_system.movement_phase
+		data["movement_direction"] = _movement_direction_text(movement_flow_system.movement_direction)
+	elif actor_name == "enemy":
+		data["movement_phase"] = movement_flow_system.enemy_movement_phase
+		data["movement_direction"] = _movement_direction_text(_direction_to_player()) if movement_flow_system.enemy_approach_active else "None"
+	if combat_timeline != null and combat_timeline.actor.to_lower() == actor_name:
+		data["action_name"] = combat_timeline.action_name
+		data["animation_key"] = combat_timeline.animation_key
+		data["phase"] = combat_timeline.phase_name()
+		data["phase_progress"] = combat_timeline.phase_progress()
+		data["phase_frames_remaining"] = combat_timeline.phase_frames_remaining()
+		data["active_frame_window"] = combat_timeline.active_window_text()
+		data["hitbox_active"] = combat_timeline.hitbox_active()
+	return _json_safe(data)
+
+func _reaction_export_data() -> Dictionary:
+	return {
+		"active": reaction_window_system.active,
+		"hit_level": current_enemy_intent if current_enemy_intent != "" else "None",
+		"total_seconds": reaction_window_system.total_seconds,
+		"remaining_seconds": reaction_window_system.remaining_seconds,
+		"progress": reaction_window_system.progress(),
+		"impact_bar_progress": 1.0 - reaction_window_system.progress(),
+		"selected_defense": reaction_window_system.resolved_defense_type() if reaction_window_system.has_active_defense() else reaction_window_system.reaction_choice.to_lower(),
+		"guard_startup_remaining": reaction_window_system.guard_startup_frames_remaining,
+		"guard_active": reaction_window_system.guard_active,
+		"defense_input_progress": reaction_window_system.defense_input_progress,
+		"correct_defense_became_active_progress": reaction_window_system.correct_defense_became_active_progress,
+		"perfect_window_active": _perfect_block_window_active(),
+		"resolution": reaction_window_system.impact_resolution_text
+	}
+
+func _movement_export_data() -> Dictionary:
+	return _json_safe({
+		"time_mode": _time_mode_text(),
+		"current_time_scale": Engine.time_scale,
+		"player_live_movement_active": movement_flow_system.player_live_movement_active,
+		"enemy_approach_active": movement_flow_system.enemy_approach_active,
+		"distance": _distance_between_fighters(),
+		"distance_change_rate": movement_flow_system.distance_change_rate,
+		"player_movement_phase": movement_flow_system.movement_phase,
+		"enemy_movement_phase": movement_flow_system.enemy_movement_phase,
+		"player_position": player.global_position,
+		"enemy_position": enemy.global_position
+	})
+
+func _json_safe(value):
+	if value is Vector2:
+		return {"x": value.x, "y": value.y}
+	if value is Dictionary:
+		var output := {}
+		for key in value.keys():
+			output[str(key)] = _json_safe(value[key])
+		return output
+	if value is Array:
+		var output_array := []
+		for item in value:
+			output_array.append(_json_safe(item))
+		return output_array
+	return value
 
 func get_impact_bar_data() -> Dictionary:
 	if not waiting_for_defense or current_enemy_intent == "":
@@ -230,7 +362,7 @@ func can_play_cards() -> bool:
 
 func is_hand_card_playable(index: int) -> bool:
 	if reaction_window_system.active:
-		return false
+		return index >= 0 and index < deck_manager.hand.size() and not _is_card_instance_queued(deck_manager.hand[index])
 	if movement_flow_system.active:
 		return index >= 0 and index < deck_manager.hand.size() and not _is_card_instance_queued(deck_manager.hand[index])
 	if waiting_for_defense:
@@ -250,7 +382,8 @@ func get_card_prediction(index: int) -> String:
 
 func play_card(index: int) -> void:
 	if reaction_window_system.active:
-		log_message.emit("Defense is live input during reaction window.")
+		log_message.emit("Challenge attempt started.")
+		_try_interrupt_with_card(index)
 		return
 
 	if movement_flow_system.active and not queue_resolver.resolving:
@@ -302,7 +435,9 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	if reaction_window_system.active:
 		if key_event.keycode == KEY_F1 or key_event.keycode == KEY_F2 or key_event.keycode == KEY_F3 or key_event.keycode == KEY_F4:
 			return
-		get_viewport().set_input_as_handled()
+		if key_event.keycode == KEY_SPACE:
+			reaction_window_system.request_jump_evade()
+			get_viewport().set_input_as_handled()
 		return
 
 	if _is_tactical_mode():
@@ -450,6 +585,13 @@ func _movement_mode_text() -> String:
 func _time_mode_text() -> String:
 	return movement_flow_system.time_mode_text(reaction_window_system.active, can_play_cards())
 
+func _movement_direction_text(direction: float) -> String:
+	if direction > 0.0:
+		return "Right"
+	if direction < 0.0:
+		return "Left"
+	return "None"
+
 func startup_frames_to_reaction_seconds(startup_frames: int) -> float:
 	return reaction_window_system.startup_frames_to_reaction_seconds(startup_frames)
 
@@ -486,7 +628,7 @@ func _resolve_reaction_impact() -> void:
 	if not reaction_window_system.has_active_defense():
 		await _resolve_reaction_no_defense()
 	else:
-		await _resolve_reaction_block(reaction_window_system.selected_defense_type, reaction_window_system.defense_input_progress)
+		await _resolve_reaction_block(reaction_window_system.resolved_defense_type(), reaction_window_system.resolved_input_progress())
 	reaction_window_system.resolving = false
 
 func _resolve_enemy_intent(defense_type: String) -> void:
@@ -589,11 +731,13 @@ func _resolve_block_after_startup(defense_type: String, startup_after_block: int
 		if startup_after_block <= perfect_block_window_frames:
 			_reset_pressure_sequence()
 			_change_frame_advantage(4)
-			_log_stance_protection(15)
-			stance_system.apply_block_stance_damage(15)
+			var stance_protected := _apply_block_stance_damage(15, "perfect_block")
 			log_message.emit("Perfect block window hit.")
 			log_message.emit("PERFECT BLOCK")
-			log_message.emit("Stance damage dealt: 15.")
+			if not stance_protected:
+				log_message.emit("Stance damage dealt: 15.")
+			else:
+				log_message.emit("Perfect block dealt no stance damage due to protection.")
 			player.show_state("PERFECT BLOCK", Color.GOLD)
 			await _run_perfect_block_hitstop()
 		else:
@@ -639,7 +783,10 @@ func _resolve_reaction_block(defense_type: String, input_progress: float) -> voi
 	_set_enemy_attack_hitbox(_make_enemy_attack_hitbox(result))
 	var enemy_attack_hits := last_enemy_attack_hitbox.intersects(get_player_hurtbox())
 	if not enemy_attack_hits or _enemy_attack_whiffs_against_defense(defense_type, result):
-		log_message.emit("Enemy attack whiffed due to spacing.")
+		if String(result["type"]) == "LOW" and _is_jump_action(defense_type):
+			log_message.emit("LOW sweep whiffed due to jump.")
+		else:
+			log_message.emit("Enemy attack whiffed due to spacing.")
 		log_message.emit("Impact resolved: whiff.")
 		reaction_window_system.set_impact_resolution("Whiff")
 		_reset_pressure_sequence()
@@ -648,11 +795,13 @@ func _resolve_reaction_block(defense_type: String, input_progress: float) -> voi
 		if input_progress >= PERFECT_BLOCK_REACTION_PROGRESS:
 			_reset_pressure_sequence()
 			_change_frame_advantage(4)
-			_log_stance_protection(15)
-			stance_system.apply_block_stance_damage(15)
+			var stance_protected := _apply_block_stance_damage(15, "perfect_block")
 			log_message.emit("Perfect block window hit.")
 			log_message.emit("PERFECT BLOCK")
-			log_message.emit("Stance damage dealt: 15.")
+			if not stance_protected:
+				log_message.emit("Stance damage dealt: 15.")
+			else:
+				log_message.emit("Perfect block dealt no stance damage due to protection.")
 			log_message.emit("Impact resolved: perfect block.")
 			reaction_window_system.set_impact_resolution("Perfect Block")
 			player.show_state("PERFECT BLOCK", Color.GOLD)
@@ -664,6 +813,8 @@ func _resolve_reaction_block(defense_type: String, input_progress: float) -> voi
 			log_message.emit("Impact resolved: normal block.")
 			reaction_window_system.set_impact_resolution("Normal Block")
 	else:
+		if String(result["type"]) == "LOW" and reaction_window_system.jump_started and not reaction_window_system.jump_active:
+			log_message.emit("Jump too late; sweep hit.")
 		player.take_damage(result["damage"])
 		_set_frame_advantage_to_neutral()
 		log_message.emit("Defense failed.")
@@ -772,15 +923,19 @@ func _try_interrupt_with_card(index: int) -> void:
 		log_message.emit("Card not playable.")
 		return
 
+	reaction_window_system.start_challenge()
 	reaction_window_system.deactivate()
 	var card: Resource = deck_manager.hand[index]
 	last_player_action_startup = int(card.startup_frame)
+	log_message.emit("Player challenge startup: %d." % last_player_action_startup)
+	log_message.emit("Enemy impact remaining: %d." % remaining_startup_frames)
 	_begin_player_card_timeline(card)
 	var card_hits := _card_would_hit_enemy_after_movement(card)
 	var enemy_startup_after_card := remaining_startup_frames - int(card.startup_frame)
-	advance_combat_frames(int(card.startup_frame), false, false)
+	_advance_player_action_frames(int(card.startup_frame), false, false)
 
 	if card_hits and absi(int(card.startup_frame) - remaining_startup_frames) <= 2:
+		log_message.emit("Challenge trades.")
 		_move_player_by_card(card)
 		_clamp_duel_distance()
 		_set_player_attack_hitbox(_make_card_hitbox(card))
@@ -788,12 +943,14 @@ func _try_interrupt_with_card(index: int) -> void:
 		return
 
 	if int(card.startup_frame) > remaining_startup_frames:
+		log_message.emit("Challenge loses.")
 		log_message.emit("Interrupt failed: too slow.")
 		log_message.emit("No follow-up draw: card did not connect.")
 		deck_manager.discard_card_unrestricted(index)
 		_resolve_enemy_counter_hit(true)
 		return
 	if not card_hits:
+		log_message.emit("Challenge loses.")
 		_move_player_by_card(card)
 		_clamp_duel_distance()
 		_set_player_attack_hitbox(_make_card_hitbox(card))
@@ -830,18 +987,23 @@ func _try_interrupt_with_card(index: int) -> void:
 		_update_time_scale()
 		return
 	log_message.emit("%s interrupted %s." % [card.display_name, interrupted_intent])
+	log_message.emit("Challenge wins.")
 	_resolve_player_card(card, 2, false)
 
 func _try_interrupt_with_card_snapshot(snapshot: Dictionary) -> void:
+	reaction_window_system.start_challenge()
 	reaction_window_system.deactivate()
 	var card: Resource = _card_from_snapshot(snapshot)
 	last_player_action_startup = int(card.startup_frame)
+	log_message.emit("Player challenge startup: %d." % last_player_action_startup)
+	log_message.emit("Enemy impact remaining: %d." % remaining_startup_frames)
 	_begin_player_card_timeline(card)
 	var card_hits := _card_would_hit_enemy_after_movement(card)
 	var enemy_startup_after_card := remaining_startup_frames - int(card.startup_frame)
-	advance_combat_frames(int(card.startup_frame), false, false)
+	_advance_player_action_frames(int(card.startup_frame), false, false)
 
 	if card_hits and absi(int(card.startup_frame) - remaining_startup_frames) <= 2:
+		log_message.emit("Challenge trades.")
 		_move_player_by_card(card)
 		_clamp_duel_distance()
 		_set_player_attack_hitbox(_make_card_hitbox(card))
@@ -849,12 +1011,14 @@ func _try_interrupt_with_card_snapshot(snapshot: Dictionary) -> void:
 		return
 
 	if int(card.startup_frame) > remaining_startup_frames:
+		log_message.emit("Challenge loses.")
 		log_message.emit("Interrupt failed: too slow.")
 		log_message.emit("No follow-up draw: card did not connect.")
 		deck_manager.discard_queued_card_snapshot(snapshot)
 		_resolve_enemy_counter_hit(true)
 		return
 	if not card_hits:
+		log_message.emit("Challenge loses.")
 		_move_player_by_card(card)
 		_clamp_duel_distance()
 		_set_player_attack_hitbox(_make_card_hitbox(card))
@@ -888,6 +1052,7 @@ func _try_interrupt_with_card_snapshot(snapshot: Dictionary) -> void:
 		enemy.clear_intent()
 	var played_card: Resource = deck_manager.play_queued_card_snapshot(snapshot, true, false)
 	log_message.emit("%s interrupted %s." % [played_card.display_name, interrupted_intent])
+	log_message.emit("Challenge wins.")
 	_resolve_player_card(played_card, 2, false)
 
 func _resolve_intent_trade(index: int, preview_card: Resource, enemy_startup_after_card: int) -> void:
@@ -901,8 +1066,7 @@ func _resolve_intent_trade(index: int, preview_card: Resource, enemy_startup_aft
 	Engine.time_scale = 1.0
 	_set_enemy_attack_hitbox(_make_enemy_attack_hitbox(result))
 	player.take_damage(result["damage"])
-	_log_stance_protection(preview_card.stance_damage)
-	stance_system.apply_hit(preview_card.damage, preview_card.stance_damage)
+	_apply_hit_stance_damage(preview_card, "trade")
 	player.set_free_movement_enabled(false)
 	var traded_intent := current_enemy_intent
 	current_enemy_intent = ""
@@ -930,8 +1094,7 @@ func _resolve_intent_trade_snapshot(snapshot: Dictionary, preview_card: Resource
 	Engine.time_scale = 1.0
 	_set_enemy_attack_hitbox(_make_enemy_attack_hitbox(result))
 	player.take_damage(result["damage"])
-	_log_stance_protection(preview_card.stance_damage)
-	stance_system.apply_hit(preview_card.damage, preview_card.stance_damage)
+	_apply_hit_stance_damage(preview_card, "trade_snapshot")
 	player.set_free_movement_enabled(false)
 	var traded_intent := current_enemy_intent
 	current_enemy_intent = ""
@@ -988,6 +1151,11 @@ func _apply_trade_frame_result(card: Resource) -> void:
 	advance_combat_frames(int(trade_result["total_recovery"]))
 	log_message.emit("Trade recovery: player %df, enemy %df." % [player_recovery, enemy_recovery])
 	log_message.emit("Post-trade frame advantage: %d." % post_trade_frame_advantage)
+	_record_combat_event("trade", "Trade occurred.", {
+		"player_recovery": player_recovery,
+		"enemy_recovery": enemy_recovery,
+		"post_trade_frame_advantage": post_trade_frame_advantage
+	})
 	if post_trade_frame_advantage > 0:
 		frame_advantage = post_trade_frame_advantage
 		enemy_vulnerable_frames_remaining = post_trade_frame_advantage
@@ -1007,7 +1175,7 @@ func _resolve_pressure_card(index: int, route_valid: bool, starts_new_route: boo
 	_begin_player_card_timeline(preview_card)
 	_move_player_by_card(preview_card)
 	_clamp_duel_distance()
-	advance_combat_frames(int(preview_card.startup_frame))
+	_advance_player_action_frames(int(preview_card.startup_frame))
 
 	var repeat_info := _repeated_card_decay(preview_card)
 	_log_enemy_pressure_reaction(preview_card, repeat_info)
@@ -1016,6 +1184,7 @@ func _resolve_pressure_card(index: int, route_valid: bool, starts_new_route: boo
 	if _card_needs_hitbox(preview_card) and not _card_hitbox_hits_enemy(preview_card):
 		log_message.emit("Card whiffed: hitbox missed.")
 		log_message.emit("No follow-up draw: card did not connect.")
+		_record_card_action_event(preview_card, "whiff", "pressure_card")
 		deck_manager.discard_card_unrestricted(index)
 		_resolve_card_frame_advantage(preview_card.whiff_frame_penalty)
 		return
@@ -1027,19 +1196,17 @@ func _resolve_pressure_card(index: int, route_valid: bool, starts_new_route: boo
 	if card == null:
 		return
 
-	_log_stance_protection(card.stance_damage)
-	stance_system.apply_hit(card.damage, card.stance_damage)
+	var stance_protected := _apply_hit_stance_damage(card, "pressure_card")
 	_apply_card_spacing(card)
 	_clamp_duel_distance()
 	if card.id == "ground_smash":
 		_set_player_attack_hitbox(Rect2())
-	if card.stance_damage > 0:
-		log_message.emit("Stance damage dealt: %d." % card.stance_damage)
 	if allow_follow_up:
 		log_message.emit("Follow-up draw triggered.")
 	else:
 		log_message.emit("Combo route broken.")
-	log_message.emit("%s hits for %d and deals %d stance." % [card.display_name, card.damage, card.stance_damage])
+	_log_card_hit_summary(card, stance_protected)
+	_record_card_action_event(card, "hit", "pressure_card")
 	if bool(repeat_info["force_end"]):
 		end_player_pressure("Repeated route exhausted.", mini(frame_delta, -1))
 		return
@@ -1054,7 +1221,7 @@ func _resolve_pressure_card_snapshot(snapshot: Dictionary) -> void:
 	_begin_player_card_timeline(preview_card)
 	_move_player_by_card(preview_card)
 	_clamp_duel_distance()
-	advance_combat_frames(int(preview_card.startup_frame))
+	_advance_player_action_frames(int(preview_card.startup_frame))
 
 	var repeat_info := _repeated_card_decay(preview_card)
 	_log_enemy_pressure_reaction(preview_card, repeat_info)
@@ -1063,6 +1230,7 @@ func _resolve_pressure_card_snapshot(snapshot: Dictionary) -> void:
 	if _card_needs_hitbox(preview_card) and not _card_hitbox_hits_enemy(preview_card):
 		log_message.emit("Card whiffed: hitbox missed.")
 		log_message.emit("No follow-up draw: card did not connect.")
+		_record_card_action_event(preview_card, "whiff", "pressure_card_snapshot")
 		deck_manager.discard_queued_card_snapshot(snapshot)
 		_resolve_card_frame_advantage(preview_card.whiff_frame_penalty)
 		return
@@ -1071,19 +1239,17 @@ func _resolve_pressure_card_snapshot(snapshot: Dictionary) -> void:
 	if (route_valid or starts_new_route) and not allow_follow_up:
 		log_message.emit("No follow-up draw: repeated route decay.")
 	var card: Resource = deck_manager.play_queued_card_snapshot(snapshot, allow_follow_up and route_valid, allow_follow_up and starts_new_route)
-	_log_stance_protection(card.stance_damage)
-	stance_system.apply_hit(card.damage, card.stance_damage)
+	var stance_protected := _apply_hit_stance_damage(card, "pressure_card_snapshot")
 	_apply_card_spacing(card)
 	_clamp_duel_distance()
 	if card.id == "ground_smash":
 		_set_player_attack_hitbox(Rect2())
-	if card.stance_damage > 0:
-		log_message.emit("Stance damage dealt: %d." % card.stance_damage)
 	if allow_follow_up:
 		log_message.emit("Follow-up draw triggered.")
 	else:
 		log_message.emit("Combo route broken.")
-	log_message.emit("%s hits for %d and deals %d stance." % [card.display_name, card.damage, card.stance_damage])
+	_log_card_hit_summary(card, stance_protected)
+	_record_card_action_event(card, "hit", "pressure_card_snapshot")
 	if bool(repeat_info["force_end"]):
 		end_player_pressure("Repeated route exhausted.", mini(frame_delta, -1))
 		return
@@ -1097,7 +1263,7 @@ func _resolve_player_card(card: Resource, bonus_frame_advantage := 0, apply_move
 		_move_player_by_card(card)
 	_clamp_duel_distance()
 	if apply_movement:
-		advance_combat_frames(int(card.startup_frame))
+		_advance_player_action_frames(int(card.startup_frame))
 
 	var repeat_info := _repeated_card_decay(card)
 	_log_enemy_pressure_reaction(card, repeat_info)
@@ -1106,22 +1272,21 @@ func _resolve_player_card(card: Resource, bonus_frame_advantage := 0, apply_move
 	if _card_needs_hitbox(card) and not _card_hitbox_hits_enemy(card):
 		log_message.emit("Card whiffed: hitbox missed.")
 		log_message.emit("No follow-up draw: card did not connect.")
+		_record_card_action_event(card, "whiff", "player_card")
 		_resolve_card_frame_advantage(card.whiff_frame_penalty)
 		return
 
-	_log_stance_protection(card.stance_damage)
-	stance_system.apply_hit(card.damage, card.stance_damage)
+	var stance_protected := _apply_hit_stance_damage(card, "player_card")
 	_apply_card_spacing(card)
 	_clamp_duel_distance()
 	if card.id == "ground_smash":
 		_set_player_attack_hitbox(Rect2())
-	if card.stance_damage > 0:
-		log_message.emit("Stance damage dealt: %d." % card.stance_damage)
 	if route_valid or starts_new_route:
 		log_message.emit("Follow-up draw triggered.")
 	else:
 		log_message.emit("Combo route broken.")
-	log_message.emit("%s hits for %d and deals %d stance." % [card.display_name, card.damage, card.stance_damage])
+	_log_card_hit_summary(card, stance_protected)
+	_record_card_action_event(card, "hit", "player_card")
 	if bool(repeat_info["force_end"]):
 		end_player_pressure("Repeated route exhausted.", mini(frame_delta, -1))
 		return
@@ -1324,10 +1489,20 @@ func _advance_enemy_startup(cost: int) -> void:
 	advance_combat_frames(cost, true, false)
 
 func advance_combat_frames(frames: int, tick_enemy_startup := false, tick_enemy_vulnerability := true) -> void:
+	var previous_stance_recovery: int = stance_system.recovery_frames()
 	combat_clock.advance_combat_frames(frames, tick_enemy_startup, tick_enemy_vulnerability)
+	var current_stance_recovery: int = stance_system.recovery_frames()
+	if combat_frame_context != "" and previous_stance_recovery > 0 and current_stance_recovery < previous_stance_recovery:
+		log_message.emit("Stance recovery ticked by %d during %s." % [previous_stance_recovery - current_stance_recovery, combat_frame_context])
 	if combat_timeline != null:
 		combat_timeline.advance_frames(frames)
 		_apply_timeline_visual()
+
+func _advance_player_action_frames(frames: int, tick_enemy_startup := false, tick_enemy_vulnerability := true) -> void:
+	var previous_context := combat_frame_context
+	combat_frame_context = "player action"
+	advance_combat_frames(frames, tick_enemy_startup, tick_enemy_vulnerability)
+	combat_frame_context = previous_context
 
 func _spend_pressure_frames(cost: int) -> void:
 	if cost <= 0:
@@ -1352,7 +1527,7 @@ func _spend_pressure_frames(cost: int) -> void:
 
 func _enemy_attack_whiffs_against_defense(defense_type: String, attack_data: Dictionary) -> bool:
 	var attack_type := String(attack_data["type"])
-	return attack_type == "HIGH" and defense_type == "crouch_block"
+	return (attack_type == "HIGH" and defense_type == "crouch_block") or (attack_type == "LOW" and _is_jump_action(defense_type))
 
 func _is_jump_action(action: String) -> bool:
 	return action == "jump" or action == "jump_forward" or action == "jump_back" or action == "neutral_jump"
@@ -1391,6 +1566,7 @@ func _on_enemy_break_started() -> void:
 	_update_time_scale()
 
 func _on_enemy_break_ended() -> void:
+	log_message.emit("Stance recovery complete; state NORMAL")
 	if frame_advantage <= 0:
 		frame_advantage = 0
 		enemy_vulnerable_frames_remaining = 0
@@ -1444,7 +1620,74 @@ func _on_follow_up_skipped(message: String) -> void:
 
 func _log_stance_protection(amount: int) -> void:
 	if stance_system.should_log_protected_damage(amount):
-		log_message.emit("Stance protected: ignored %d stance damage" % amount)
+		log_message.emit("Stance protected: ignored %d stance damage." % amount)
+
+func _apply_hit_stance_damage(card: Resource, event_source := "card_hit") -> bool:
+	var before := int(enemy.stance)
+	var protected: bool = stance_system.should_log_protected_damage(card.stance_damage)
+	_log_stance_protection(card.stance_damage)
+	stance_system.apply_hit(card.damage, card.stance_damage)
+	var after := int(enemy.stance)
+	var applied: int = 0 if protected else card.stance_damage
+	_record_combat_event("stance_update", "", {
+		"source": event_source,
+		"stance_before": before,
+		"stance_after": after,
+		"stance_damage_attempted": card.stance_damage,
+		"stance_damage_applied": applied,
+		"stance_protected": protected,
+		"stance_state": stance_system.state_name(),
+		"recovery_frames_remaining": stance_system.recovery_frames()
+	})
+	return protected
+
+func _apply_block_stance_damage(amount: int, event_source := "block") -> bool:
+	var before := int(enemy.stance)
+	var protected: bool = stance_system.should_log_protected_damage(amount)
+	_log_stance_protection(amount)
+	stance_system.apply_block_stance_damage(amount)
+	var after := int(enemy.stance)
+	_record_combat_event("stance_update", "", {
+		"source": event_source,
+		"stance_before": before,
+		"stance_after": after,
+		"stance_damage_attempted": amount,
+		"stance_damage_applied": 0 if protected else amount,
+		"stance_protected": protected,
+		"stance_state": stance_system.state_name(),
+		"recovery_frames_remaining": stance_system.recovery_frames()
+	})
+	return protected
+
+func _log_card_hit_summary(card: Resource, stance_protected: bool) -> void:
+	if card.stance_damage > 0 and stance_protected:
+		log_message.emit("%s hits for %d. No stance damage due to protection." % [card.display_name, card.damage])
+	elif card.stance_damage > 0:
+		log_message.emit("Stance damage dealt: %d." % card.stance_damage)
+		log_message.emit("%s hits for %d and deals %d stance." % [card.display_name, card.damage, card.stance_damage])
+	else:
+		log_message.emit("%s hits for %d." % [card.display_name, card.damage])
+
+func _record_card_action_event(card: Resource, result: String, event_source := "card") -> void:
+	_record_combat_event("action_executed", "", {
+		"source": event_source,
+		"actor": "player",
+		"action_id": card.id,
+		"action_name": card.display_name,
+		"card_instance_id": card.instance_id,
+		"startup": card.startup_frame,
+		"damage": card.damage,
+		"stance_damage": card.stance_damage,
+		"hit_adv": card.frame_gain,
+		"whiff_adv": card.whiff_frame_penalty,
+		"tags": card.tags,
+		"route": card.allowed_follow_up_card_ids,
+		"animation_key": combat_timeline.animation_key if combat_timeline != null else "unknown",
+		"phase_at_resolution": combat_timeline.phase_name() if combat_timeline != null else "unknown",
+		"distance_at_resolution": _distance_between_fighters(),
+		"hitbox_active": combat_timeline.hitbox_active() if combat_timeline != null else false,
+		"result": result
+	})
 
 func _is_interrupt_card_index(index: int) -> bool:
 	if index < 0 or index >= deck_manager.hand.size():
@@ -1695,7 +1938,7 @@ func _update_time_scale() -> void:
 		return
 
 	if movement_flow_system.active:
-		player.set_free_movement_enabled(true)
+		player.set_free_movement_enabled(false)
 		Engine.time_scale = NEUTRAL_SLOW_TIME_SCALE
 		return
 

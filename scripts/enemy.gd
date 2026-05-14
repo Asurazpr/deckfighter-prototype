@@ -38,6 +38,11 @@ var stance_recovery_frames_remaining := 0
 var stance_break_stun_frames_remaining := 0
 var stance_protection_frames_remaining := 0
 var current_attack := ""
+var current_animation_action := "None"
+var current_animation_phase := "DONE"
+var current_animation_progress := 0.0
+var current_animation_hit_level := ""
+var current_animation_hitbox_active := false
 var decision_state := DecisionState.NEUTRAL
 var last_decision_reason := "Ready."
 var last_action_score := 0.0
@@ -273,6 +278,11 @@ func _set_idle() -> void:
 	CombatAnimationDriver.clear(rig)
 
 func show_timeline_phase(action_name: String, phase_name: String, phase_progress := 0.0, hit_level := "", hitbox_active := false) -> void:
+	current_animation_action = action_name
+	current_animation_phase = phase_name
+	current_animation_progress = phase_progress
+	current_animation_hit_level = current_attack if current_attack != "" else hit_level
+	current_animation_hitbox_active = hitbox_active
 	CombatAnimationDriver.drive_rig(rig, action_name, phase_name, phase_progress, current_attack if current_attack != "" else hit_level, hitbox_active)
 	match phase_name:
 		"STARTUP":
@@ -294,7 +304,30 @@ func clear_timeline_visual() -> void:
 	if stance_state == StanceState.NORMAL:
 		body.color = Color(1.0, 0.28, 0.22)
 		body.scale = Vector2.ONE
+		current_animation_action = "None"
+		current_animation_phase = "DONE"
+		current_animation_progress = 0.0
+		current_animation_hit_level = ""
+		current_animation_hitbox_active = false
 		CombatAnimationDriver.clear(rig)
+
+func get_animation_debug() -> Dictionary:
+	return {
+		"animation_key": rig.pose_key if rig != null and "pose_key" in rig else "unknown",
+		"pose_key": rig.pose_key if rig != null and "pose_key" in rig else "unknown",
+		"action_name": current_animation_action,
+		"hit_level": current_animation_hit_level,
+		"phase": current_animation_phase,
+		"phase_progress": current_animation_progress,
+		"phase_frames_remaining": null,
+		"active_frame_window": "unknown",
+		"hitbox_active": current_animation_hitbox_active,
+		"current_pose_name": rig.pose_key if rig != null and "pose_key" in rig else "unknown",
+		"movement_phase": "unknown",
+		"movement_direction": "unknown",
+		"rig_scale": rig.scale if rig != null else Vector2.ONE,
+		"facing": "right" if rig == null or float(rig.facing) >= 0.0 else "left"
+	}
 
 func _update_stance_break_bar() -> void:
 	if stance_break_bar == null:

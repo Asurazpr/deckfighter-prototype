@@ -159,6 +159,9 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			combat_log_visible = not combat_log_visible
 			_apply_debug_visibility()
 			get_viewport().set_input_as_handled()
+		KEY_F5:
+			_export_combat_log()
+			get_viewport().set_input_as_handled()
 
 func _remove_space_from_ui_accept() -> void:
 	if not InputMap.has_action("ui_accept"):
@@ -293,7 +296,7 @@ func _refresh_impact_bar() -> void:
 	if not impact_panel.visible:
 		return
 	var hit_level := String(data.get("hit_level", "None"))
-	impact_label.text = "Incoming: %s\nReact: J Block | S+J Low" % hit_level
+	impact_label.text = "Incoming: %s\nReact: J Block | S+J Low | Space Jump | Card Challenge" % hit_level
 	var progress := clampf(float(data.get("progress", 0.0)), 0.0, 1.0)
 	impact_bar.value = (1.0 - progress) * 100.0
 	impact_bar.modulate = Color(1.0, 0.45, 0.35) if progress >= 0.8 else Color.WHITE
@@ -380,3 +383,46 @@ func _refresh_combat_log() -> void:
 			text += "\n"
 		text += "- %s" % event
 	combat_log_label.text = text
+
+func _export_combat_log() -> void:
+	var directory := "user://combat_logs"
+	var err := DirAccess.make_dir_recursive_absolute(directory)
+	if err != OK:
+		_on_log_message("Combat log export failed: could not create log directory.")
+		return
+
+	var timestamp := Time.get_datetime_string_from_system().replace(":", "-").replace(" ", "_")
+	var path := "%s/combat_log_%s.jsonl" % [directory, timestamp]
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		_on_log_message("Combat log export failed: could not open log file.")
+		return
+
+	var export_timestamp := Time.get_datetime_string_from_system()
+	file.store_line(JSON.stringify({
+		"event_type": "export_metadata",
+		"export_version": 1,
+		"timestamp": export_timestamp,
+		"project": "deckfighter-prototype",
+		"engine": "Godot",
+		"scene": get_tree().current_scene.scene_file_path if get_tree().current_scene != null else "unknown",
+		"commit_hint": "unknown",
+		"notes": "F5 combat log export"
+	}))
+
+	var context := {}
+	if combat_manager != null and combat_manager.has_method("get_combat_log_export_context"):
+		context = combat_manager.get_combat_log_export_context()
+	file.store_line(JSON.stringify({"event_type": "snapshot", "data": context}))
+	if combat_manager != null and combat_manager.has_method("get_combat_trace_events"):
+		for event in combat_manager.get_combat_trace_events():
+			file.store_line(JSON.stringify({"event_type": "combat_event", "data": event}))
+	for i in range(full_combat_log_events.size()):
+		file.store_line(JSON.stringify({
+			"event_type": "combat_event",
+			"kind": "human_log",
+			"index": i,
+			"message": full_combat_log_events[i]
+		}))
+	file.close()
+	_on_log_message("Combat log exported to %s" % path)

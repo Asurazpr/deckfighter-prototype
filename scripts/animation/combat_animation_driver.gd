@@ -25,15 +25,21 @@ static func animation_key_for_action(action_name: String, phase_name: String, hi
 			return "overhead_smash"
 	if normalized.find("jab") != -1 or normalized.find("high_check") != -1:
 		return "jab_%s" % phase_name.to_lower()
-	if normalized.find("step_forward") != -1 or normalized.find("step_forward") != -1 or normalized.find("step_slash") != -1:
+	if normalized.find("step_forward") != -1 or normalized.find("walk_forward") != -1 or normalized.find("step_slash") != -1:
 		return "step_forward"
 	if normalized.find("backstep") != -1 or normalized.find("step_back") != -1:
 		return "backstep"
 	if normalized.find("launcher") != -1 or normalized.find("overhead") != -1:
 		return "launcher_%s" % phase_name.to_lower()
+	if normalized.find("air_follow") != -1:
+		return "air_follow_%s" % phase_name.to_lower()
+	if normalized.find("ground_smash") != -1:
+		return "ground_smash_%s" % phase_name.to_lower()
+	if normalized.find("heavy_slash") != -1:
+		return "heavy_slash_%s" % phase_name.to_lower()
+	if normalized.find("guard_break") != -1:
+		return "guard_break_%s" % phase_name.to_lower()
 	if normalized.find("low") != -1:
-		return "kick_%s" % phase_name.to_lower()
-	if normalized.find("air_follow") != -1 or normalized.find("ground_smash") != -1:
 		return "kick_%s" % phase_name.to_lower()
 	if normalized.find("block") != -1:
 		return "block_low" if hit_level == "LOW" or normalized.find("crouch") != -1 else "block_high"

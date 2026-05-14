@@ -16,6 +16,11 @@ const GRAVITY := 1300.0
 var hp := max_hp
 var input_enabled := true
 var free_movement_enabled := true
+var current_animation_action := "None"
+var current_animation_phase := "DONE"
+var current_animation_progress := 0.0
+var current_animation_hit_level := ""
+var current_animation_hitbox_active := false
 
 @onready var body: ColorRect = $Body
 @onready var state_label: Label = $StateLabel
@@ -69,6 +74,11 @@ func show_state(label: String, color: Color) -> void:
 	_flash(color, label)
 
 func show_timeline_phase(action_name: String, phase_name: String, phase_progress := 0.0, hit_level := "", hitbox_active := false) -> void:
+	current_animation_action = action_name
+	current_animation_phase = phase_name
+	current_animation_progress = phase_progress
+	current_animation_hit_level = hit_level
+	current_animation_hitbox_active = hitbox_active
 	CombatAnimationDriver.drive_rig(rig, action_name, phase_name, phase_progress, hit_level, hitbox_active)
 	match phase_name:
 		"STARTUP":
@@ -88,7 +98,30 @@ func show_timeline_phase(action_name: String, phase_name: String, phase_progress
 func clear_timeline_visual() -> void:
 	body.color = Color(0.25, 0.75, 1.0)
 	body.scale = Vector2.ONE
+	current_animation_action = "None"
+	current_animation_phase = "DONE"
+	current_animation_progress = 0.0
+	current_animation_hit_level = ""
+	current_animation_hitbox_active = false
 	CombatAnimationDriver.clear(rig)
+
+func get_animation_debug() -> Dictionary:
+	return {
+		"animation_key": rig.pose_key if rig != null and "pose_key" in rig else "unknown",
+		"pose_key": rig.pose_key if rig != null and "pose_key" in rig else "unknown",
+		"action_name": current_animation_action,
+		"phase": current_animation_phase,
+		"phase_progress": current_animation_progress,
+		"phase_frames_remaining": null,
+		"active_frame_window": "unknown",
+		"hitbox_active": current_animation_hitbox_active,
+		"current_pose_name": rig.pose_key if rig != null and "pose_key" in rig else "unknown",
+		"movement_phase": "unknown",
+		"movement_direction": "unknown",
+		"rig_scale": rig.scale if rig != null else Vector2.ONE,
+		"facing": "right" if rig == null or float(rig.facing) >= 0.0 else "left",
+		"hit_level": current_animation_hit_level
+	}
 
 func set_input_enabled(enabled: bool) -> void:
 	input_enabled = enabled

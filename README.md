@@ -118,12 +118,16 @@ Current prototype controls may change during development.
 | Movement | `L` | Backstep |
 | Defense | `J` | Block |
 | Defense | `S` + `J` | Low block |
+| Defense | `Space` during reaction | Jump evade LOW attacks if airborne before impact |
 | Combat | Mouse | Select cards / queue actions |
-| Combat | `1`-`4` | Queue or play hand cards |
+| Combat | `1`-`4` | Queue, play, or challenge with hand cards |
 | Combat | `E` | Execute queued tactical actions / end turn |
 | Combat | `Backspace` | Remove last queued action |
 | Combat | `C` | Clear action queue |
 | Debug | `F1`-`F4` | Toggle debug panels |
+| Debug | `F5` | Export combat log JSONL |
+
+F5 exports structured combat traces to `user://combat_logs/`. On Windows, Godot usually maps this to `%APPDATA%\Godot\app_userdata\deckfighter-prototype\combat_logs`.
 
 ---
 
