@@ -4,8 +4,6 @@ extends Node
 signal frame_advantage_changed(value: int)
 signal log_message(message: String)
 
-enum CombatFlowState { NEUTRAL, SLOW_NEUTRAL, PLANNING, EXECUTING_QUEUE, PLAYER_PRESSURE, ENEMY_INTENT, REACTION_WINDOW, DEFENSE_REACTION, STANCE_BREAK, PUNISH, GAME_OVER }
-
 const ATTACK_RECOVERY := 0.35
 const PLAYER_CHOICE_TIME_SCALE := 0.2
 const NEUTRAL_SLOW_TIME_SCALE := 0.35
@@ -26,6 +24,8 @@ const EnemyAISystemScript := preload("res://scripts/combat/enemy_ai_system.gd")
 const CombatTimelineScript := preload("res://scripts/combat/combat_timeline.gd")
 const ReactionWindowSystemScript := preload("res://scripts/combat/reaction_window_system.gd")
 const MovementFlowSystemScript := preload("res://scripts/combat/movement_flow_system.gd")
+const CombatStateMachineScript := preload("res://scripts/combat/combat_state_machine.gd")
+const CombatInputRouterScript := preload("res://scripts/combat/combat_input_router.gd")
 const DEBUG_ATTACK_HITBOX_LIFETIME := 0.25
 
 @export var starting_frame_advantage := 0
@@ -53,7 +53,7 @@ var waiting_for_defense := false
 var combat_over := false
 var punish_in_progress := false
 var enemy_intent_scheduled := false
-var combat_state := CombatFlowState.NEUTRAL
+var combat_state := 0
 var current_enemy_intent := ""
 var enemy_base_startup_frame := 0
 var enemy_effective_startup_frame := 0
@@ -79,6 +79,8 @@ var enemy_ai_system
 var combat_timeline
 var reaction_window_system
 var movement_flow_system
+var combat_state_machine
+var combat_input_router
 
 @onready var player = $"../Player"
 @onready var enemy = $"../Enemy"
@@ -121,6 +123,8 @@ func _setup_combat_systems() -> void:
 	reaction_window_system.setup(self, player, PERFECT_BLOCK_REACTION_PROGRESS, REACTION_GUARD_STARTUP_FRAMES)
 	movement_flow_system = MovementFlowSystemScript.new()
 	movement_flow_system.setup(self, player, enemy, movement_system, NEUTRAL_SLOW_TIME_SCALE, live_neutral_player_speed, live_neutral_enemy_speed, enemy_intent_range, slow_neutral_intent_delay)
+	combat_state_machine = CombatStateMachineScript.new()
+	combat_input_router = CombatInputRouterScript.new()
 
 func _begin_combat() -> void:
 	deck_manager.start_combat()
@@ -133,7 +137,7 @@ func _log_architecture_validation() -> void:
 	var active_path: String = get_script().resource_path
 	var legacy_present := ResourceLoader.exists("res://scripts/combat_manager.gd")
 	log_message.emit("Active combat manager: %s (CombatManagerCore)." % active_path)
-	log_message.emit("Loaded combat systems: CombatClock, CombatTimeline, FrameSystem, QueueResolver, RouteSystem, MovementSystem, MovementFlowSystem, HitboxSystem, TradeSystem, StanceSystem, EnemyAISystem, ReactionWindowSystem.")
+	log_message.emit("Loaded combat systems: CombatClock, CombatTimeline, FrameSystem, QueueResolver, RouteSystem, MovementSystem, MovementFlowSystem, HitboxSystem, TradeSystem, StanceSystem, EnemyAISystem, ReactionWindowSystem, CombatStateMachine, CombatInputRouter.")
 	log_message.emit("Legacy combat manager present: %s." % str(legacy_present))
 
 func _process(_delta: float) -> void:
@@ -414,73 +418,7 @@ func _on_player_defense(defense_type: String) -> void:
 		_resolve_enemy_intent(defense_type)
 
 func _unhandled_key_input(event: InputEvent) -> void:
-	var key_event := event as InputEventKey
-	if key_event == null or not key_event.pressed or key_event.echo:
-		return
-
-	if movement_flow_system.active:
-		if key_event.keycode == KEY_E:
-			get_viewport().set_input_as_handled()
-			_execute_or_wait_tactical_queue()
-			return
-		if key_event.keycode == KEY_BACKSPACE:
-			get_viewport().set_input_as_handled()
-			_pop_tactical_action()
-			return
-		if key_event.keycode == KEY_C:
-			get_viewport().set_input_as_handled()
-			_clear_tactical_queue()
-			return
-
-	if reaction_window_system.active:
-		if key_event.keycode == KEY_F1 or key_event.keycode == KEY_F2 or key_event.keycode == KEY_F3 or key_event.keycode == KEY_F4:
-			return
-		if key_event.keycode == KEY_SPACE:
-			reaction_window_system.request_jump_evade()
-			get_viewport().set_input_as_handled()
-		return
-
-	if _is_tactical_mode():
-		if key_event.keycode == KEY_E:
-			get_viewport().set_input_as_handled()
-			_execute_or_wait_tactical_queue()
-			return
-		if key_event.keycode == KEY_BACKSPACE:
-			get_viewport().set_input_as_handled()
-			_pop_tactical_action()
-			return
-		if key_event.keycode == KEY_C:
-			get_viewport().set_input_as_handled()
-			_clear_tactical_queue()
-			return
-		if key_event.keycode == KEY_U:
-			get_viewport().set_input_as_handled()
-			if queue_resolver.is_empty():
-				_execute_or_wait_tactical_queue()
-			return
-
-		var queued_action := _queued_action_from_key(key_event.keycode)
-		if not queued_action.is_empty():
-			get_viewport().set_input_as_handled()
-			_queue_tactical_action(queued_action)
-			return
-
-	if waiting_for_defense:
-		var defense_type := _defense_from_key(key_event.keycode)
-		if defense_type == "":
-			return
-
-		get_viewport().set_input_as_handled()
-		_resolve_enemy_intent(defense_type)
-		return
-
-	if _can_take_pressure_movement():
-		var pressure_action := _pressure_movement_from_key(key_event.keycode)
-		if pressure_action == "":
-			return
-
-		get_viewport().set_input_as_handled()
-		_apply_pressure_movement(pressure_action)
+	combat_input_router.route_key_event(event, self, get_viewport())
 
 func _run_enemy_attack(start_reaction := true) -> void:
 	if combat_over or frame_advantage > 0 or attack_in_progress:
@@ -1697,60 +1635,10 @@ func _is_interrupt_card_index(index: int) -> bool:
 
 func _current_mode() -> String:
 	_refresh_combat_state()
-	return _combat_state_name(combat_state)
+	return combat_state_machine.state_name(combat_state)
 
 func _refresh_combat_state() -> void:
-	# TODO: Promote this derived enum into the authoritative combat state machine
-	# once the remaining legacy mode flags have been untangled.
-	if combat_over:
-		combat_state = CombatFlowState.GAME_OVER
-		return
-	if punish_in_progress:
-		combat_state = CombatFlowState.PUNISH
-		return
-	if _is_enemy_broken():
-		combat_state = CombatFlowState.STANCE_BREAK
-		return
-	if reaction_window_system.active:
-		combat_state = CombatFlowState.REACTION_WINDOW
-		return
-	if waiting_for_defense:
-		combat_state = CombatFlowState.EXECUTING_QUEUE if queue_resolver != null and queue_resolver.resolving else CombatFlowState.ENEMY_INTENT
-		return
-	if frame_advantage > 0:
-		combat_state = CombatFlowState.EXECUTING_QUEUE if queue_resolver != null and queue_resolver.resolving else CombatFlowState.PLAYER_PRESSURE
-		return
-	if movement_flow_system.active:
-		combat_state = CombatFlowState.SLOW_NEUTRAL
-		return
-	combat_state = CombatFlowState.NEUTRAL
-
-func _combat_state_name(state_id: int) -> String:
-	match state_id:
-		CombatFlowState.NEUTRAL:
-			return "Neutral"
-		CombatFlowState.SLOW_NEUTRAL:
-			return "Slow Neutral"
-		CombatFlowState.PLANNING:
-			return "Planning"
-		CombatFlowState.EXECUTING_QUEUE:
-			return "Executing Queue"
-		CombatFlowState.PLAYER_PRESSURE:
-			return "Player Pressure"
-		CombatFlowState.ENEMY_INTENT:
-			return "Enemy Intent"
-		CombatFlowState.REACTION_WINDOW:
-			return "Reaction Window"
-		CombatFlowState.DEFENSE_REACTION:
-			return "Defense Reaction"
-		CombatFlowState.STANCE_BREAK:
-			return "Stance Break"
-		CombatFlowState.PUNISH:
-			return "Punish"
-		CombatFlowState.GAME_OVER:
-			return "Game Over"
-		_:
-			return "Unknown"
+	combat_state = combat_state_machine.derive_from_manager(self)
 
 func get_queue_text() -> String:
 	return queue_resolver.queue_text()

@@ -4,13 +4,16 @@
 
 ## CombatManager
 
-`CombatManagerCore` owns high-level match flow, input routing, state transitions, combat logs, UI-facing debug text, and coordination between systems. It should not become the home for new gameplay rules. When adding combat behavior, prefer placing the rule in the relevant system and keeping the manager as the caller/orchestrator.
+`CombatManagerCore` owns high-level match flow, scene references, combat logs, UI-facing debug text, and coordination between systems. It should not become the home for new gameplay rules. When adding combat behavior, prefer placing the rule in the relevant system and keeping the manager as the caller/orchestrator.
 
-Current combat states are beginning to route through `CombatFlowState` in `CombatManagerCore`, while legacy flags still drive the actual flow. Future explicit state-machine work should preserve the current debug labels and gameplay behavior while making the enum authoritative.
+Current combat states route through `CombatStateMachine`, which derives state from the existing legacy mode flags for now. Future explicit state-machine work should preserve the current debug labels and gameplay behavior while making state transitions more authoritative.
 
 ## Systems
 
 - `CombatClock`: single combat-frame advancement entry point. It ticks startup, vulnerability, and stance timers using combat frames.
+- `CombatStateMachine`: combat state enum, derived state transitions, state names, and state query helpers for reaction, queue, slow-neutral, and game-over style checks.
+- `CombatInputRouter`: raw keyboard event routing for tactical queue controls, live reaction inputs, jump evade, pressure movement, and queue execution. Key bindings should eventually become configurable input data.
+- `CombatDebugExporter`: JSONL export formatting/writing for metadata, snapshots, structured combat events, and human-readable log lines.
 - `CombatTimeline`: lightweight visual/action timeline for startup, active, impact, recovery, movement, hitbox windows, and animation keys. It consumes combat-frame advancement and should never become the authority for gameplay timing.
 - `QueueResolver`: tactical action queue, frozen card snapshots, queue text, duplicate card instance checks, queue clearing, and trade interruption flags.
 - `FrameSystem`: frame advantage math, effective enemy startup, initiative carry-over helpers, and punish-window calculation.
@@ -36,6 +39,7 @@ Animation and timing should consume combat-frame data from the systems. Animatio
 
 - Continue moving stance rules/config from `enemy.gd` into character kit data.
 - Move card definitions, route tables, generated follow-ups, and repeat-decay tuning out of `DeckManager`/`RouteSystem` into data assets.
+- Continue extracting combat result application into a focused resolution system once card/route/stance/frame interactions have more test coverage.
 - Continue moving enemy move definitions and AI scoring weights into ruleset/character kit data.
 - Let later skins attach to `CharacterRig2D`, and let moves/character kits override animation keys, sockets, and procedural pose data.
 - Keep `NORMAL`, `ELITE`, and `BOSS` intent profiles data-shaped so they can become modded enemy definitions.

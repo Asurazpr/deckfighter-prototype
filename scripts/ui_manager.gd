@@ -16,6 +16,7 @@ extends CanvasLayer
 const MAX_COMBAT_LOG_EVENTS := 12
 const DETAIL_FONT_SIZE := 13
 const HEADER_FONT_SIZE := 15
+const CombatDebugExporterScript := preload("res://scripts/combat/combat_debug_exporter.gd")
 const PREDICTION_COLORS := {
 	"interrupt": Color(0.55, 1.0, 0.62),
 	"trade": Color(1.0, 0.9, 0.35),
@@ -42,6 +43,7 @@ var debug_panels_visible := true
 var enemy_ai_visible := true
 var timing_visible := true
 var combat_log_visible := true
+var combat_debug_exporter = CombatDebugExporterScript.new()
 
 func _ready() -> void:
 	_remove_space_from_ui_accept()
@@ -386,43 +388,18 @@ func _refresh_combat_log() -> void:
 
 func _export_combat_log() -> void:
 	var directory := "user://combat_logs"
-	var err := DirAccess.make_dir_recursive_absolute(directory)
-	if err != OK:
-		_on_log_message("Combat log export failed: could not create log directory.")
-		return
-
 	var timestamp := Time.get_datetime_string_from_system().replace(":", "-").replace(" ", "_")
 	var path := "%s/combat_log_%s.jsonl" % [directory, timestamp]
-	var file := FileAccess.open(path, FileAccess.WRITE)
-	if file == null:
-		_on_log_message("Combat log export failed: could not open log file.")
-		return
-
-	var export_timestamp := Time.get_datetime_string_from_system()
-	file.store_line(JSON.stringify({
-		"event_type": "export_metadata",
-		"export_version": 1,
-		"timestamp": export_timestamp,
-		"project": "deckfighter-prototype",
-		"engine": "Godot",
-		"scene": get_tree().current_scene.scene_file_path if get_tree().current_scene != null else "unknown",
-		"commit_hint": "unknown",
-		"notes": "F5 combat log export"
-	}))
 
 	var context := {}
 	if combat_manager != null and combat_manager.has_method("get_combat_log_export_context"):
 		context = combat_manager.get_combat_log_export_context()
-	file.store_line(JSON.stringify({"event_type": "snapshot", "data": context}))
+	var trace_events := []
 	if combat_manager != null and combat_manager.has_method("get_combat_trace_events"):
-		for event in combat_manager.get_combat_trace_events():
-			file.store_line(JSON.stringify({"event_type": "combat_event", "data": event}))
-	for i in range(full_combat_log_events.size()):
-		file.store_line(JSON.stringify({
-			"event_type": "combat_event",
-			"kind": "human_log",
-			"index": i,
-			"message": full_combat_log_events[i]
-		}))
-	file.close()
-	_on_log_message("Combat log exported to %s" % path)
+		trace_events = combat_manager.get_combat_trace_events()
+	var scene_path := get_tree().current_scene.scene_file_path if get_tree().current_scene != null else "unknown"
+	var err: Error = combat_debug_exporter.export_jsonl(path, context, trace_events, full_combat_log_events, scene_path)
+	if err != OK:
+		_on_log_message("Combat log export failed: %s." % error_string(err))
+	else:
+		_on_log_message("Combat log exported to %s" % path)
