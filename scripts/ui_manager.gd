@@ -314,6 +314,10 @@ func _try_play_card_from_number(index: int) -> void:
 
 func _try_play_card(index: int) -> bool:
 	if combat_manager == null or not combat_manager.is_hand_card_playable(index):
+		if combat_manager != null and combat_manager.has_method("get_card_input_rejection_reason"):
+			var reason := String(combat_manager.get_card_input_rejection_reason(index))
+			if reason != "":
+				_on_log_message("Card input rejected: %s." % reason)
 		return false
 	combat_manager.play_card(index)
 	return true

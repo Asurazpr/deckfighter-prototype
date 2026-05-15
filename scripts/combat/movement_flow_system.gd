@@ -18,6 +18,7 @@ var player_speed := 140.0
 var enemy_speed := 70.0
 var intent_range := 95.0
 var intent_delay := 1.2
+var approach_target_distance := 95.0
 
 var active := false
 var enemy_approach_active := false
@@ -37,6 +38,8 @@ var enemy_movement_frames_remaining := 0.0
 var _frame_accumulator := 0.0
 var _logged_travel := false
 var _enemy_movement_logged := false
+var _enemy_reached_range_logged := false
+var enemy_approach_end_reason := "none"
 
 func setup(
 	manager_ref: Node,
@@ -87,6 +90,7 @@ func tick(delta: float) -> Dictionary:
 		return {"should_start_intent": false}
 	elapsed += delta
 	_advance_combat_time(delta)
+	approach_target_distance = _current_approach_target_distance()
 	var previous_distance := movement_system.distance_between_fighters()
 	player_live_movement_active = Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_D)
 	_tick_player_step(delta)
@@ -96,8 +100,16 @@ func tick(delta: float) -> Dictionary:
 	distance_change_rate = (current_distance - previous_distance) / maxf(delta, 0.001)
 	last_distance = current_distance
 	_log_state_changes()
+	var reached_intent_range := current_distance <= approach_target_distance
+	if reached_intent_range and not _enemy_reached_range_logged:
+		enemy_approach_end_reason = "distance %.0f <= target %.0f" % [current_distance, approach_target_distance]
+		manager.log_message.emit("Enemy reached range; evaluating intent.")
+		_enemy_reached_range_logged = true
+	elif not reached_intent_range:
+		enemy_approach_end_reason = "approaching: distance %.0f > target %.0f" % [current_distance, approach_target_distance]
+		_enemy_reached_range_logged = false
 	return {
-		"should_start_intent": current_distance <= intent_range and elapsed >= intent_delay,
+		"should_start_intent": reached_intent_range,
 		"distance": current_distance
 	}
 
@@ -128,7 +140,7 @@ func _apply_player_movement(real_delta: float) -> void:
 	player.global_position.x += direction * player_speed * real_delta
 
 func _apply_enemy_movement(real_delta: float) -> void:
-	enemy_approach_active = movement_system.distance_between_fighters() > intent_range
+	enemy_approach_active = movement_system.distance_between_fighters() > approach_target_distance
 	if not enemy_approach_active:
 		return
 	enemy.global_position.x += movement_system.direction_to_player() * enemy_speed * real_delta
@@ -176,7 +188,8 @@ func _start_player_step(direction: float) -> void:
 	_show_player_step_pose()
 
 func _tick_enemy_approach_step(real_delta: float) -> void:
-	enemy_approach_active = movement_system.distance_between_fighters() > intent_range
+	approach_target_distance = _current_approach_target_distance()
+	enemy_approach_active = movement_system.distance_between_fighters() > approach_target_distance
 	if not enemy_approach_active:
 		if _enemy_movement_logged:
 			manager.log_message.emit("Enemy movement animation stopped.")
@@ -260,3 +273,8 @@ func _log_state_changes() -> void:
 		if enemy_approach_active:
 			manager.log_message.emit("Enemy approaching.")
 		last_enemy_approach_active = enemy_approach_active
+
+func _current_approach_target_distance() -> float:
+	if manager != null and manager.has_method("get_enemy_approach_target_distance"):
+		return float(manager.get_enemy_approach_target_distance())
+	return intent_range

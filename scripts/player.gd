@@ -21,6 +21,7 @@ var current_animation_phase := "DONE"
 var current_animation_progress := 0.0
 var current_animation_hit_level := ""
 var current_animation_hitbox_active := false
+var _card_visual_tween: Tween
 
 @onready var body: ColorRect = $Body
 @onready var state_label: Label = $StateLabel
@@ -69,6 +70,7 @@ func take_damage(amount: int) -> void:
 
 func perform_card_action(card: Resource) -> void:
 	_flash(Color.GOLD, card.display_name.to_upper())
+	_play_readable_card_sequence(card)
 
 func show_state(label: String, color: Color) -> void:
 	_flash(color, label)
@@ -96,6 +98,8 @@ func show_timeline_phase(action_name: String, phase_name: String, phase_progress
 	_set_state("%s\n%s" % [action_name.to_upper(), phase_name])
 
 func clear_timeline_visual() -> void:
+	if _card_visual_tween != null and _card_visual_tween.is_running():
+		_card_visual_tween.kill()
 	body.color = Color(0.25, 0.75, 1.0)
 	body.scale = Vector2.ONE
 	current_animation_action = "None"
@@ -104,6 +108,28 @@ func clear_timeline_visual() -> void:
 	current_animation_hit_level = ""
 	current_animation_hitbox_active = false
 	CombatAnimationDriver.clear(rig)
+
+func _play_readable_card_sequence(card: Resource) -> void:
+	if rig == null:
+		return
+	if _card_visual_tween != null and _card_visual_tween.is_running():
+		_card_visual_tween.kill()
+	var action_name := String(card.display_name)
+	var startup_seconds := clampf(float(card.startup_frame) / 60.0, 0.08, 0.22)
+	var active_seconds := 0.08
+	var recovery_seconds := clampf(float(maxi(1, int(card.frame_cost))) / 60.0, 0.08, 0.18)
+	_card_visual_tween = create_tween()
+	_card_visual_tween.tween_method(_drive_card_visual.bind(action_name, "STARTUP", false), 0.0, 1.0, startup_seconds)
+	_card_visual_tween.tween_method(_drive_card_visual.bind(action_name, "ACTIVE", true), 0.0, 1.0, active_seconds)
+	_card_visual_tween.tween_method(_drive_card_visual.bind(action_name, "RECOVERY", false), 0.0, 1.0, recovery_seconds)
+
+func _drive_card_visual(progress: float, action_name: String, phase_name: String, hitbox_active: bool) -> void:
+	current_animation_action = action_name
+	current_animation_phase = phase_name
+	current_animation_progress = progress
+	current_animation_hit_level = ""
+	current_animation_hitbox_active = hitbox_active
+	CombatAnimationDriver.drive_rig(rig, action_name, phase_name, progress, "", hitbox_active)
 
 func get_animation_debug() -> Dictionary:
 	return {

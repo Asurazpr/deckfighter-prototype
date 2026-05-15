@@ -45,6 +45,8 @@ const DEBUG_ATTACK_HITBOX_LIFETIME := 0.25
 @export var live_neutral_enemy_speed := 70.0
 @export var enemy_intent_range := 95.0
 @export var slow_neutral_intent_delay := 1.2
+@export var defensive_reaction_wait_frames := 20
+@export var max_defensive_reaction_retries := 3
 
 var frame_advantage := 0
 var last_defense := ""
@@ -67,6 +69,10 @@ var player_attack_hitbox_lifetime := 0.0
 var enemy_attack_hitbox_lifetime := 0.0
 var combat_frame_context := ""
 var combat_trace_events: Array[Dictionary] = []
+var defensive_reaction_retry_count := 0
+var defensive_reaction_wait_remaining := 0.0
+var defensive_reaction_fallback := "None"
+var last_no_attack_reaches_reason := "None"
 var combat_clock
 var frame_system
 var queue_resolver
@@ -221,7 +227,15 @@ func get_timing_debug_text() -> String:
 	]
 
 func get_enemy_ai_debug_text() -> String:
-	return enemy_ai_system.debug_text()
+	return "%s\nEnemy Approach Target: %.0f\nClosest Move Range: %.0f\nNo-Reach Reason: %s\nDefensive Retries: %d/%d\nFallback: %s" % [
+		enemy_ai_system.debug_text(),
+		get_enemy_approach_target_distance(),
+		_closest_enemy_attack_max_range(),
+		last_no_attack_reaches_reason,
+		defensive_reaction_retry_count,
+		max_defensive_reaction_retries,
+		defensive_reaction_fallback
+	]
 
 func get_combat_log_export_context() -> Dictionary:
 	return {
@@ -229,6 +243,8 @@ func get_combat_log_export_context() -> Dictionary:
 		"combat_state": _current_mode(),
 		"frame_advantage": frame_advantage,
 		"distance": _distance_between_fighters(),
+		"input_lock_state": _input_lock_state(),
+		"input_rejected_reason": get_card_input_rejection_reason(0),
 		"player_animation": _animation_debug_for(player, "player"),
 		"enemy_animation": _animation_debug_for(enemy, "enemy"),
 		"reaction": _reaction_export_data(),
@@ -238,6 +254,13 @@ func get_combat_log_export_context() -> Dictionary:
 		"enemy_ai_action": enemy_ai_system.last_chosen_action,
 		"enemy_ai_reason": enemy_ai_system.last_reason,
 		"enemy_ai_score": enemy_ai_system.last_score,
+		"enemy_approach_end_reason": "reached_range" if movement_flow_system.last_distance <= enemy_intent_range else "approaching",
+		"enemy_next_intent_evaluation": enemy_ai_system.last_reason,
+		"enemy_approach_target_distance": get_enemy_approach_target_distance(),
+		"closest_usable_move_range": _closest_enemy_attack_max_range(),
+		"reason_no_attack_reaches": last_no_attack_reaches_reason,
+		"defensive_reaction_retry_count": defensive_reaction_retry_count,
+		"defensive_reaction_fallback": defensive_reaction_fallback,
 		"stance_state": stance_system.state_name(),
 		"stance_recovery_frames": stance_system.recovery_frames(),
 		"stance_break_stun_frames": stance_system.break_stun_frames(),
@@ -250,6 +273,21 @@ func get_combat_log_export_context() -> Dictionary:
 		"enemy_remaining_startup": remaining_startup_frames,
 		"queue": get_queue_text()
 	}
+
+func _input_lock_state() -> String:
+	if combat_over:
+		return "game_over"
+	if queue_resolver != null and queue_resolver.resolving:
+		return "queue_executing"
+	if reaction_window_system.active:
+		return "live_defense_only"
+	if waiting_for_defense:
+		return "enemy_intent"
+	if movement_flow_system.active:
+		return "slow_neutral_cards_allowed"
+	if can_play_cards():
+		return "cards_allowed"
+	return "locked"
 
 func get_combat_trace_events() -> Array:
 	return combat_trace_events.duplicate(true)
@@ -324,6 +362,10 @@ func _movement_export_data() -> Dictionary:
 		"enemy_approach_active": movement_flow_system.enemy_approach_active,
 		"distance": _distance_between_fighters(),
 		"distance_change_rate": movement_flow_system.distance_change_rate,
+		"enemy_approach_target_distance": movement_flow_system.approach_target_distance,
+		"enemy_approach_end_reason": movement_flow_system.enemy_approach_end_reason,
+		"defensive_reaction_retry_count": defensive_reaction_retry_count,
+		"defensive_reaction_fallback": defensive_reaction_fallback,
 		"player_movement_phase": movement_flow_system.movement_phase,
 		"enemy_movement_phase": movement_flow_system.enemy_movement_phase,
 		"player_position": player.global_position,
@@ -372,6 +414,25 @@ func is_hand_card_playable(index: int) -> bool:
 	if waiting_for_defense:
 		return index >= 0 and index < deck_manager.hand.size() and not _is_card_instance_queued(deck_manager.hand[index])
 	return can_play_cards() and index >= 0 and index < deck_manager.hand.size() and not _is_card_instance_queued(deck_manager.hand[index])
+
+func get_card_input_rejection_reason(index: int) -> String:
+	if index < 0 or index >= deck_manager.hand.size():
+		return "no hand card at index %d" % index
+	if _is_card_instance_queued(deck_manager.hand[index]):
+		return "card instance already queued"
+	if combat_over:
+		return "combat over"
+	if queue_resolver != null and queue_resolver.resolving:
+		return "queue is already executing"
+	if reaction_window_system.active:
+		return ""
+	if movement_flow_system.active:
+		return ""
+	if waiting_for_defense:
+		return ""
+	if can_play_cards():
+		return ""
+	return "current state does not accept card input"
 
 func get_card_prediction(index: int) -> String:
 	if not show_prediction_assist:
@@ -425,14 +486,23 @@ func _run_enemy_attack(start_reaction := true) -> void:
 		return
 
 	_exit_slow_neutral()
+	var approach_end_reason := "Enemy reached range" if _distance_between_fighters() <= enemy_intent_range else "Enemy evaluating from spacing"
 	var ai_context := _enemy_ai_context(initiative_offset)
 	var ai_decision: Dictionary = enemy_ai_system.choose_intent(ai_context)
 	_log_enemy_ai_decision(ai_decision)
 	if ai_decision.is_empty():
 		if enemy.can_act() and enemy_ai_system.last_state == "DEFENSIVE_REACTION":
-			_enemy_approach_or_wait()
-		return
+			var fallback_decision := _enemy_no_attack_fallback(approach_end_reason)
+			if fallback_decision.is_empty():
+				_enemy_approach_or_wait()
+				return
+			ai_decision = fallback_decision
+		else:
+			return
 
+	defensive_reaction_retry_count = 0
+	defensive_reaction_wait_remaining = 0.0
+	defensive_reaction_fallback = "attack"
 	attack_in_progress = true
 	waiting_for_defense = true
 	last_defense = ""
@@ -455,6 +525,7 @@ func _run_enemy_attack(start_reaction := true) -> void:
 	_clear_attack_hitboxes()
 	player.set_free_movement_enabled(false)
 	log_message.emit("Enemy intent: %s." % enemy.current_attack)
+	log_message.emit("%s; starting %s." % [approach_end_reason, enemy.current_attack])
 	log_message.emit("Slow time: react before impact." if start_reaction else "Enemy intent opened for queued action.")
 	frame_advantage_changed.emit(frame_advantage)
 	_update_time_scale()
@@ -495,6 +566,50 @@ func _log_enemy_ai_decision(decision: Dictionary) -> void:
 	log_message.emit("Enemy AI reason: %s." % decision.get("reason", "No reason."))
 	log_message.emit("Enemy profile: %s phase %s; %s." % [enemy_ai_system.intent_profile.get("tier", "NORMAL"), enemy_ai_system.boss_phase_id, enemy_ai_system.last_profile_modifiers])
 
+func _enemy_no_attack_fallback(approach_end_reason: String) -> Dictionary:
+	var distance := _distance_between_fighters()
+	var closest_range := _closest_enemy_attack_max_range()
+	last_no_attack_reaches_reason = "distance %.0f, closest usable move range %.0f" % [distance, closest_range]
+	if distance > closest_range and defensive_reaction_retry_count < max_defensive_reaction_retries:
+		defensive_reaction_retry_count += 1
+		defensive_reaction_fallback = "continue_approach"
+		log_message.emit("%s; no attack reaches. Continuing approach. Retry %d/%d." % [approach_end_reason, defensive_reaction_retry_count, max_defensive_reaction_retries])
+		return {}
+
+	var fallback_attack := _fallback_reachable_enemy_attack_id()
+	if fallback_attack != "" and defensive_reaction_retry_count >= max_defensive_reaction_retries:
+		defensive_reaction_fallback = "force_basic_poke:%s" % fallback_attack
+		log_message.emit("Enemy defensive retries exhausted; forcing %s." % fallback_attack)
+		var startup: int = frame_system.effective_startup(int(Enemy.ATTACKS[fallback_attack]["startup_frame"]), initiative_offset)
+		return {
+			"action_id": fallback_attack,
+			"action": Enemy.ATTACKS[fallback_attack],
+			"score": 1.0,
+			"effective_startup": startup,
+			"state": "PRESSURING",
+			"reason": "fallback basic poke after defensive reaction retries",
+			"spacing": last_no_attack_reaches_reason,
+			"punish_candidates": []
+		}
+
+	defensive_reaction_retry_count += 1
+	defensive_reaction_wait_remaining = float(defensive_reaction_wait_frames)
+	defensive_reaction_fallback = "guard_wait"
+	log_message.emit("%s; choosing guard wait for %df. Retry %d/%d." % [approach_end_reason, defensive_reaction_wait_frames, defensive_reaction_retry_count, max_defensive_reaction_retries])
+	return {}
+
+func _fallback_reachable_enemy_attack_id() -> String:
+	var distance := _distance_between_fighters()
+	for action_id in ["MID", "HIGH", "LOW", "OVERHEAD"]:
+		if not Enemy.ATTACKS.has(action_id):
+			continue
+		var action: Dictionary = Enemy.ATTACKS[action_id]
+		var range_min := float(action.get("range_min", 0.0))
+		var range_max := float(action.get("range_max", action.get("range", 0.0)))
+		if distance >= range_min and distance <= range_max:
+			return action_id
+	return ""
+
 func _enemy_approach_or_wait() -> void:
 	_enter_slow_neutral("Slow neutral movement started.")
 
@@ -515,6 +630,9 @@ func _tick_slow_neutral(delta: float) -> void:
 
 	var result: Dictionary = movement_flow_system.tick(delta)
 	if bool(result.get("should_start_intent", false)):
+		if defensive_reaction_wait_remaining > 0.0:
+			defensive_reaction_wait_remaining = maxf(0.0, defensive_reaction_wait_remaining - delta * 60.0)
+			return
 		_run_enemy_attack()
 
 func _movement_mode_text() -> String:
@@ -522,6 +640,21 @@ func _movement_mode_text() -> String:
 
 func _time_mode_text() -> String:
 	return movement_flow_system.time_mode_text(reaction_window_system.active, can_play_cards())
+
+func get_enemy_approach_target_distance() -> float:
+	var usable_range := _closest_enemy_attack_max_range()
+	if usable_range <= 0.0:
+		return enemy_intent_range
+	return minf(enemy_intent_range, maxf(min_duel_distance, usable_range - 2.0))
+
+func _closest_enemy_attack_max_range() -> float:
+	var max_range := 0.0
+	if enemy == null:
+		return max_range
+	for action_id in Enemy.ATTACKS.keys():
+		var action: Dictionary = Enemy.ATTACKS[action_id]
+		max_range = maxf(max_range, float(action.get("range_max", action.get("range", 0.0))))
+	return max_range
 
 func _movement_direction_text(direction: float) -> String:
 	if direction > 0.0:
@@ -1704,14 +1837,13 @@ func _execute_or_wait_tactical_queue() -> void:
 		queue_resolver.clear()
 
 func _execute_slow_neutral_queue() -> void:
+	var had_enemy_intent := _distance_between_fighters() <= enemy_intent_range
 	_exit_slow_neutral()
-	_run_enemy_attack(false)
-	if not waiting_for_defense:
-		queue_resolver.clear()
-		return
+	if had_enemy_intent:
+		_run_enemy_attack(false)
 	queue_resolver.resolving = true
 	queue_resolver.interrupted_by_trade = false
-	while not queue_resolver.is_empty() and waiting_for_defense and not combat_over:
+	while not queue_resolver.is_empty() and (waiting_for_defense or not had_enemy_intent) and not combat_over:
 		var action: Dictionary = queue_resolver.pop_front()
 		await _resolve_queued_action(action)
 		frame_advantage_changed.emit(frame_advantage)
@@ -1726,6 +1858,8 @@ func _execute_slow_neutral_queue() -> void:
 		_update_time_scale()
 	if not waiting_for_defense:
 		queue_resolver.clear()
+		if frame_advantage <= 0 and not combat_over:
+			_schedule_enemy_if_needed()
 
 func _resolve_queued_action(action: Dictionary) -> void:
 	if action.get("type", "") == "CARD":
@@ -1735,6 +1869,9 @@ func _resolve_queued_action(action: Dictionary) -> void:
 		if waiting_for_defense:
 			await _try_interrupt_with_card_snapshot(action)
 		elif _can_take_pressure_movement():
+			_resolve_pressure_card_snapshot(action)
+		else:
+			log_message.emit("Pre-emptive card resolved during enemy approach.")
 			_resolve_pressure_card_snapshot(action)
 		return
 
