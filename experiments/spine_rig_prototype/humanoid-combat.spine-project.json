@@ -1,0 +1,29 @@
+{
+  "name": "humanoid-combat",
+  "note": "Runtime-ready Spine JSON/atlas export. Open humanoid-combat.json in Spine to save a proprietary .spine editor file if needed.",
+  "proportions": {
+    "totalHeightPx": 528,
+    "headHeightPx": 70,
+    "headsTall": 7.54,
+    "pose": "neutral 30-45 degree three-quarter combat stance with grounded feet",
+    "style": "average adult male, realistic non-superhero proportions"
+  },
+  "files": {
+    "json": "export/humanoid-combat.json",
+    "atlas": "export/humanoid-combat.atlas",
+    "atlasPng": "export/humanoid-combat.png",
+    "sourceImages": "images/*.png"
+  },
+  "animations": [
+    "idle",
+    "idle_3q",
+    "walk",
+    "walk_side",
+    "walk_side_v2",
+    "walk_side_v3",
+    "jab",
+    "jab_turn",
+    "hurt",
+    "joint_debug"
+  ]
+}

@@ -1,0 +1,152 @@
+humanoid-combat.png
+size: 1024,512
+format: RGBA8888
+filter: Linear,Linear
+repeat: none
+head
+  rotate: false
+  xy: 4, 4
+  size: 70, 82
+  orig: 70, 82
+  offset: 0, 0
+  index: -1
+neck
+  rotate: false
+  xy: 78, 4
+  size: 36, 42
+  orig: 36, 42
+  offset: 0, 0
+  index: -1
+chest
+  rotate: false
+  xy: 118, 4
+  size: 112, 104
+  orig: 112, 104
+  offset: 0, 0
+  index: -1
+abdomen
+  rotate: false
+  xy: 234, 4
+  size: 84, 86
+  orig: 84, 86
+  offset: 0, 0
+  index: -1
+pelvis
+  rotate: false
+  xy: 322, 4
+  size: 88, 62
+  orig: 88, 62
+  offset: 0, 0
+  index: -1
+left_upper_arm
+  rotate: false
+  xy: 414, 4
+  size: 98, 34
+  orig: 98, 34
+  offset: 0, 0
+  index: -1
+right_upper_arm
+  rotate: false
+  xy: 516, 4
+  size: 98, 34
+  orig: 98, 34
+  offset: 0, 0
+  index: -1
+left_forearm
+  rotate: false
+  xy: 618, 4
+  size: 92, 30
+  orig: 92, 30
+  offset: 0, 0
+  index: -1
+right_forearm
+  rotate: false
+  xy: 714, 4
+  size: 92, 30
+  orig: 92, 30
+  offset: 0, 0
+  index: -1
+left_hand
+  rotate: false
+  xy: 810, 4
+  size: 40, 30
+  orig: 40, 30
+  offset: 0, 0
+  index: -1
+right_hand
+  rotate: false
+  xy: 854, 4
+  size: 40, 30
+  orig: 40, 30
+  offset: 0, 0
+  index: -1
+left_thigh
+  rotate: false
+  xy: 4, 112
+  size: 148, 42
+  orig: 148, 42
+  offset: 0, 0
+  index: -1
+right_thigh
+  rotate: false
+  xy: 156, 112
+  size: 148, 40
+  orig: 148, 40
+  offset: 0, 0
+  index: -1
+left_shin
+  rotate: false
+  xy: 308, 112
+  size: 148, 34
+  orig: 148, 34
+  offset: 0, 0
+  index: -1
+right_shin
+  rotate: false
+  xy: 460, 112
+  size: 148, 32
+  orig: 148, 32
+  offset: 0, 0
+  index: -1
+left_foot
+  rotate: false
+  xy: 612, 112
+  size: 72, 32
+  orig: 72, 32
+  offset: 0, 0
+  index: -1
+right_foot
+  rotate: false
+  xy: 688, 112
+  size: 72, 32
+  orig: 72, 32
+  offset: 0, 0
+  index: -1
+left_shoulder_cap
+  rotate: false
+  xy: 764, 112
+  size: 42, 38
+  orig: 42, 38
+  offset: 0, 0
+  index: -1
+right_shoulder_cap
+  rotate: false
+  xy: 810, 112
+  size: 42, 38
+  orig: 42, 38
+  offset: 0, 0
+  index: -1
+left_hip_cap
+  rotate: false
+  xy: 856, 112
+  size: 44, 38
+  orig: 44, 38
+  offset: 0, 0
+  index: -1
+right_hip_cap
+  rotate: false
+  xy: 904, 112
+  size: 44, 38
+  orig: 44, 38
+  offset: 0, 0
+  index: -1
