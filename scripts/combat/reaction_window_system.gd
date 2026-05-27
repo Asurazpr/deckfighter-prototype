@@ -156,6 +156,8 @@ func _update_live_guard(elapsed_startup_frames: int, real_delta: float, current_
 	if live_guard == "":
 		if current_guard_input != "":
 			manager.log_message.emit("Guard released.")
+			if player != null and player.has_method("release_block_action"):
+				player.release_block_action()
 		reset_guard_state()
 		reaction_choice = "NONE"
 		return

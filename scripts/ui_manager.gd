@@ -39,6 +39,7 @@ var queue_label: Label
 var impact_panel: PanelContainer
 var impact_label: Label
 var impact_bar: ProgressBar
+var start_fight_button: Button
 var debug_panels_visible := true
 var enemy_ai_visible := true
 var timing_visible := true
@@ -62,6 +63,8 @@ func _process(_delta: float) -> void:
 		enemy_ai_label.text = combat_manager.get_enemy_ai_debug_text()
 	if timing_label != null and combat_manager.has_method("get_timing_debug_text"):
 		timing_label.text = combat_manager.get_timing_debug_text()
+	if start_fight_button != null and combat_manager.has_method("is_fight_started"):
+		start_fight_button.visible = not bool(combat_manager.is_fight_started())
 	_refresh_impact_bar()
 
 func bind(player: Node, enemy: Node, deck_manager: Node, manager: Node) -> void:
@@ -242,6 +245,14 @@ func _build_debug_panels() -> void:
 	impact_bar.custom_minimum_size = Vector2(320, 18)
 	impact_box.add_child(impact_bar)
 
+	start_fight_button = Button.new()
+	start_fight_button.text = "Start Fight"
+	start_fight_button.position = Vector2(690, 140)
+	start_fight_button.size = Vector2(220, 54)
+	start_fight_button.add_theme_font_size_override("font_size", 22)
+	start_fight_button.pressed.connect(_on_start_fight_pressed)
+	root.add_child(start_fight_button)
+
 func _create_debug_panel(title: String, position: Vector2, size: Vector2) -> PanelContainer:
 	var panel := PanelContainer.new()
 	panel.position = position
@@ -305,6 +316,13 @@ func _refresh_impact_bar() -> void:
 
 func _on_card_pressed(index: int) -> void:
 	_try_play_card(index)
+
+func _on_start_fight_pressed() -> void:
+	if combat_manager != null and combat_manager.has_method("start_fight"):
+		combat_manager.start_fight()
+	if start_fight_button != null:
+		start_fight_button.visible = false
+	_refresh_card_enabled_state()
 
 func _try_play_card_from_number(index: int) -> void:
 	if index >= card_buttons.size():

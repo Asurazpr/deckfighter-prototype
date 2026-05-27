@@ -53,6 +53,7 @@ var last_defense := ""
 var attack_in_progress := false
 var waiting_for_defense := false
 var combat_over := false
+var fight_started := false
 var punish_in_progress := false
 var enemy_intent_scheduled := false
 var combat_state := 0
@@ -134,10 +135,20 @@ func _setup_combat_systems() -> void:
 
 func _begin_combat() -> void:
 	deck_manager.start_combat()
-	_enter_slow_neutral("Slow neutral movement started.")
 	frame_advantage_changed.emit(frame_advantage)
 	_log_architecture_validation()
+	log_message.emit("Pre-fight. Inspect your deck, then press Start Fight.")
+
+func start_fight() -> void:
+	if fight_started or combat_over:
+		return
+	fight_started = true
+	_enter_slow_neutral("Slow neutral movement started.")
+	frame_advantage_changed.emit(frame_advantage)
 	log_message.emit("Duel start. Read the enemy intent.")
+
+func is_fight_started() -> bool:
+	return fight_started
 
 func _log_architecture_validation() -> void:
 	var active_path: String = get_script().resource_path
@@ -402,11 +413,17 @@ func get_impact_bar_data() -> Dictionary:
 	}
 
 func can_play_cards() -> bool:
+	if not fight_started:
+		return false
 	if reaction_window_system.active:
 		return false
 	return (waiting_for_defense or ((frame_advantage > 0 or _enemy_break_frames_remaining() > 0) and not attack_in_progress)) and not combat_over
 
 func is_hand_card_playable(index: int) -> bool:
+	if not fight_started:
+		return false
+	if _player_action_locked():
+		return false
 	if reaction_window_system.active:
 		return index >= 0 and index < deck_manager.hand.size() and not _is_card_instance_queued(deck_manager.hand[index])
 	if movement_flow_system.active:
@@ -422,8 +439,12 @@ func get_card_input_rejection_reason(index: int) -> String:
 		return "card instance already queued"
 	if combat_over:
 		return "combat over"
+	if not fight_started:
+		return "fight has not started"
 	if queue_resolver != null and queue_resolver.resolving:
 		return "queue is already executing"
+	if _player_action_locked():
+		return "player action is still recovering (%s)" % _player_action_lock_reason()
 	if reaction_window_system.active:
 		return ""
 	if movement_flow_system.active:
@@ -432,7 +453,7 @@ func get_card_input_rejection_reason(index: int) -> String:
 		return ""
 	if can_play_cards():
 		return ""
-	return "current state does not accept card input"
+	return "current state does not accept card input (%s frame_advantage=%d)" % [_player_action_lock_reason(), frame_advantage]
 
 func get_card_prediction(index: int) -> String:
 	if not show_prediction_assist:
@@ -446,9 +467,12 @@ func get_card_prediction(index: int) -> String:
 	return "normal"
 
 func play_card(index: int) -> void:
+	if _player_action_locked():
+		log_message.emit("Card input rejected: %s." % _player_action_lock_reason())
+		return
 	if reaction_window_system.active:
 		log_message.emit("Challenge attempt started.")
-		_try_interrupt_with_card(index)
+		await _try_interrupt_with_card(index)
 		return
 
 	if movement_flow_system.active and not queue_resolver.resolving:
@@ -461,7 +485,7 @@ func play_card(index: int) -> void:
 		return
 
 	if waiting_for_defense:
-		_try_interrupt_with_card(index)
+		await _try_interrupt_with_card(index)
 		return
 
 	if not can_play_cards():
@@ -471,7 +495,7 @@ func play_card(index: int) -> void:
 	var route_valid: bool = deck_manager.is_card_route_valid(index, _is_enemy_broken())
 	var preview_card: Resource = deck_manager.hand[index]
 	var starts_new_route: bool = not route_valid and _card_has_tag(preview_card, "starter")
-	_resolve_pressure_card(index, route_valid, starts_new_route)
+	await _resolve_pressure_card(index, route_valid, starts_new_route)
 
 func _on_player_defense(defense_type: String) -> void:
 	last_defense = defense_type
@@ -483,6 +507,8 @@ func _unhandled_key_input(event: InputEvent) -> void:
 
 func _run_enemy_attack(start_reaction := true) -> void:
 	if combat_over or frame_advantage > 0 or attack_in_progress:
+		return
+	if not fight_started:
 		return
 
 	_exit_slow_neutral()
@@ -614,6 +640,8 @@ func _enemy_approach_or_wait() -> void:
 	_enter_slow_neutral("Slow neutral movement started.")
 
 func _enter_slow_neutral(message := "") -> void:
+	if not fight_started:
+		return
 	if combat_over or attack_in_progress or waiting_for_defense or punish_in_progress or frame_advantage > 0:
 		return
 	movement_flow_system.enter(message)
@@ -640,6 +668,31 @@ func _movement_mode_text() -> String:
 
 func _time_mode_text() -> String:
 	return movement_flow_system.time_mode_text(reaction_window_system.active, can_play_cards())
+
+func _player_action_locked() -> bool:
+	return player != null and player.has_method("can_start_card_action") and not bool(player.can_start_card_action())
+
+func _player_action_lock_reason() -> String:
+	if player != null and player.has_method("card_action_rejection_reason"):
+		return "%s frame_advantage=%d" % [String(player.card_action_rejection_reason()), frame_advantage]
+	return "player action is still recovering"
+
+func _open_player_followup_window(reason := "") -> void:
+	if player != null and player.has_method("open_followup_window"):
+		player.open_followup_window()
+	if reason != "":
+		log_message.emit(reason)
+
+func _begin_player_commitment() -> void:
+	Engine.time_scale = 1.0
+
+func _start_player_card_action(card: Resource) -> void:
+	if player != null and player.has_method("perform_card_action"):
+		player.perform_card_action(card)
+
+func _wait_for_player_hit_confirm(card: Resource) -> void:
+	if player != null and player.has_method("wait_for_action_hit_confirm"):
+		await player.wait_for_action_hit_confirm(card)
 
 func get_enemy_approach_target_distance() -> float:
 	var usable_range := _closest_enemy_attack_max_range()
@@ -820,6 +873,7 @@ func _resolve_block_after_startup(defense_type: String, startup_after_block: int
 		_set_frame_advantage_to_neutral()
 		log_message.emit("Defense failed.")
 
+	_release_player_block_if_needed(defense_type)
 	await _finish_enemy_resolution_after_recovery()
 
 func _resolve_reaction_no_defense() -> void:
@@ -892,6 +946,7 @@ func _resolve_reaction_block(defense_type: String, input_progress: float) -> voi
 		log_message.emit("Impact resolved: hit.")
 		reaction_window_system.set_impact_resolution("Hit")
 
+	_release_player_block_if_needed(defense_type)
 	await _finish_enemy_resolution_after_recovery()
 
 func _begin_enemy_resolution() -> void:
@@ -921,6 +976,12 @@ func _finish_enemy_resolution_after_recovery() -> void:
 	advance_combat_frames(int(round(ATTACK_RECOVERY * 60.0)))
 	await get_tree().create_timer(ATTACK_RECOVERY).timeout
 	_finish_enemy_resolution()
+
+func _release_player_block_if_needed(defense_type: String) -> void:
+	if defense_type != "block" and defense_type != "crouch_block":
+		return
+	if player != null and player.has_method("release_block_action"):
+		player.release_block_action()
 
 func _defense_answers_attack(defense_type: String, attack_data: Dictionary) -> bool:
 	match String(attack_data["type"]):
@@ -990,6 +1051,7 @@ func _run_perfect_block_hitstop() -> void:
 	_update_time_scale()
 
 func _try_interrupt_with_card(index: int) -> void:
+	_begin_player_commitment()
 	if index < 0 or index >= deck_manager.hand.size():
 		log_message.emit("Card not playable.")
 		return
@@ -1000,6 +1062,7 @@ func _try_interrupt_with_card(index: int) -> void:
 	last_player_action_startup = int(card.startup_frame)
 	log_message.emit("Player challenge startup: %d." % last_player_action_startup)
 	log_message.emit("Enemy impact remaining: %d." % remaining_startup_frames)
+	_start_player_card_action(card)
 	_begin_player_card_timeline(card)
 	var card_hits := _card_would_hit_enemy_after_movement(card)
 	var enemy_startup_after_card := remaining_startup_frames - int(card.startup_frame)
@@ -1009,6 +1072,7 @@ func _try_interrupt_with_card(index: int) -> void:
 		log_message.emit("Challenge trades.")
 		_move_player_by_card(card)
 		_clamp_duel_distance()
+		await _wait_for_player_hit_confirm(card)
 		_set_player_attack_hitbox(_make_card_hitbox(card))
 		_resolve_intent_trade(index, card, enemy_startup_after_card)
 		return
@@ -1024,6 +1088,7 @@ func _try_interrupt_with_card(index: int) -> void:
 		log_message.emit("Challenge loses.")
 		_move_player_by_card(card)
 		_clamp_duel_distance()
+		await _wait_for_player_hit_confirm(card)
 		_set_player_attack_hitbox(_make_card_hitbox(card))
 		log_message.emit("Interrupt failed: out of range.")
 		log_message.emit("Card whiffed: hitbox missed.")
@@ -1042,6 +1107,7 @@ func _try_interrupt_with_card(index: int) -> void:
 	remaining_startup_frames = enemy_startup_after_card
 	_move_player_by_card(card)
 	_clamp_duel_distance()
+	await _wait_for_player_hit_confirm(card)
 	_set_player_attack_hitbox(_make_card_hitbox(card))
 	Engine.time_scale = 1.0
 	frame_advantage_changed.emit(frame_advantage)
@@ -1059,15 +1125,17 @@ func _try_interrupt_with_card(index: int) -> void:
 		return
 	log_message.emit("%s interrupted %s." % [card.display_name, interrupted_intent])
 	log_message.emit("Challenge wins.")
-	_resolve_player_card(card, 2, false)
+	await _resolve_player_card(card, 2, false, true, false, false, false)
 
 func _try_interrupt_with_card_snapshot(snapshot: Dictionary) -> void:
+	_begin_player_commitment()
 	reaction_window_system.start_challenge()
 	reaction_window_system.deactivate()
 	var card: Resource = _card_from_snapshot(snapshot)
 	last_player_action_startup = int(card.startup_frame)
 	log_message.emit("Player challenge startup: %d." % last_player_action_startup)
 	log_message.emit("Enemy impact remaining: %d." % remaining_startup_frames)
+	_start_player_card_action(card)
 	_begin_player_card_timeline(card)
 	var card_hits := _card_would_hit_enemy_after_movement(card)
 	var enemy_startup_after_card := remaining_startup_frames - int(card.startup_frame)
@@ -1077,6 +1145,7 @@ func _try_interrupt_with_card_snapshot(snapshot: Dictionary) -> void:
 		log_message.emit("Challenge trades.")
 		_move_player_by_card(card)
 		_clamp_duel_distance()
+		await _wait_for_player_hit_confirm(card)
 		_set_player_attack_hitbox(_make_card_hitbox(card))
 		_resolve_intent_trade_snapshot(snapshot, card, enemy_startup_after_card)
 		return
@@ -1092,6 +1161,7 @@ func _try_interrupt_with_card_snapshot(snapshot: Dictionary) -> void:
 		log_message.emit("Challenge loses.")
 		_move_player_by_card(card)
 		_clamp_duel_distance()
+		await _wait_for_player_hit_confirm(card)
 		_set_player_attack_hitbox(_make_card_hitbox(card))
 		log_message.emit("Interrupt failed: out of range.")
 		log_message.emit("Card whiffed: hitbox missed.")
@@ -1110,6 +1180,7 @@ func _try_interrupt_with_card_snapshot(snapshot: Dictionary) -> void:
 	remaining_startup_frames = enemy_startup_after_card
 	_move_player_by_card(card)
 	_clamp_duel_distance()
+	await _wait_for_player_hit_confirm(card)
 	_set_player_attack_hitbox(_make_card_hitbox(card))
 	Engine.time_scale = 1.0
 	frame_advantage_changed.emit(frame_advantage)
@@ -1124,7 +1195,7 @@ func _try_interrupt_with_card_snapshot(snapshot: Dictionary) -> void:
 	var played_card: Resource = deck_manager.play_queued_card_snapshot(snapshot, true, false)
 	log_message.emit("%s interrupted %s." % [played_card.display_name, interrupted_intent])
 	log_message.emit("Challenge wins.")
-	_resolve_player_card(played_card, 2, false)
+	await _resolve_player_card(played_card, 2, false, true, false, false, false)
 
 func _resolve_intent_trade(index: int, preview_card: Resource, enemy_startup_after_card: int) -> void:
 	var result: Dictionary = enemy.resolve_attack()
@@ -1231,22 +1302,25 @@ func _apply_trade_frame_result(card: Resource) -> void:
 		frame_advantage = post_trade_frame_advantage
 		enemy_vulnerable_frames_remaining = post_trade_frame_advantage
 		frame_advantage_changed.emit(frame_advantage)
+		_open_player_followup_window("Follow-up window opened after trade.")
 		_update_time_scale()
 	else:
 		end_player_pressure("Trade recovery favored enemy.", post_trade_frame_advantage)
 
 func _resolve_pressure_card(index: int, route_valid: bool, starts_new_route: bool) -> void:
+	_begin_player_commitment()
 	if index < 0 or index >= deck_manager.hand.size():
 		log_message.emit("Card not playable.")
 		return
 
 	var preview_card: Resource = deck_manager.hand[index]
 	log_message.emit("Card played: %s." % preview_card.display_name)
-	player.perform_card_action(preview_card)
+	_start_player_card_action(preview_card)
 	_begin_player_card_timeline(preview_card)
 	_move_player_by_card(preview_card)
 	_clamp_duel_distance()
 	_advance_player_action_frames(int(preview_card.startup_frame))
+	await _wait_for_player_hit_confirm(preview_card)
 
 	var repeat_info := _repeated_card_decay(preview_card)
 	_log_enemy_pressure_reaction(preview_card, repeat_info)
@@ -1284,15 +1358,17 @@ func _resolve_pressure_card(index: int, route_valid: bool, starts_new_route: boo
 	_resolve_card_frame_advantage(frame_delta)
 
 func _resolve_pressure_card_snapshot(snapshot: Dictionary) -> void:
+	_begin_player_commitment()
 	var preview_card: Resource = _card_from_snapshot(snapshot)
 	var route_valid := bool(snapshot.get("route_valid_at_queue", false))
 	var starts_new_route := bool(snapshot.get("starts_new_route_at_queue", false))
 	log_message.emit("Card played: %s." % preview_card.display_name)
-	player.perform_card_action(preview_card)
+	_start_player_card_action(preview_card)
 	_begin_player_card_timeline(preview_card)
 	_move_player_by_card(preview_card)
 	_clamp_duel_distance()
 	_advance_player_action_frames(int(preview_card.startup_frame))
+	await _wait_for_player_hit_confirm(preview_card)
 
 	var repeat_info := _repeated_card_decay(preview_card)
 	_log_enemy_pressure_reaction(preview_card, repeat_info)
@@ -1326,15 +1402,19 @@ func _resolve_pressure_card_snapshot(snapshot: Dictionary) -> void:
 		return
 	_resolve_card_frame_advantage(frame_delta)
 
-func _resolve_player_card(card: Resource, bonus_frame_advantage := 0, apply_movement := true, route_valid := true, starts_new_route := false) -> void:
+func _resolve_player_card(card: Resource, bonus_frame_advantage := 0, apply_movement := true, route_valid := true, starts_new_route := false, start_animation := true, wait_for_hit_confirm := true) -> void:
+	_begin_player_commitment()
 	log_message.emit("Card played: %s." % card.display_name)
-	player.perform_card_action(card)
-	_begin_player_card_timeline(card)
+	if start_animation:
+		_start_player_card_action(card)
+		_begin_player_card_timeline(card)
 	if apply_movement:
 		_move_player_by_card(card)
 	_clamp_duel_distance()
 	if apply_movement:
 		_advance_player_action_frames(int(card.startup_frame))
+	if wait_for_hit_confirm:
+		await _wait_for_player_hit_confirm(card)
 
 	var repeat_info := _repeated_card_decay(card)
 	_log_enemy_pressure_reaction(card, repeat_info)
@@ -1386,9 +1466,12 @@ func _resolve_card_frame_advantage(delta: int) -> void:
 
 	if final_frame_advantage >= 0:
 		if _enemy_break_frames_remaining() > 0:
+			if final_frame_advantage > 0:
+				_open_player_followup_window("Follow-up window opened.")
 			_update_time_scale()
 			return
 		if final_frame_advantage > 0 and _has_valid_card_for_current_state():
+			_open_player_followup_window("Follow-up window opened.")
 			_update_time_scale()
 			_schedule_enemy_if_needed()
 			return
@@ -1869,10 +1952,10 @@ func _resolve_queued_action(action: Dictionary) -> void:
 		if waiting_for_defense:
 			await _try_interrupt_with_card_snapshot(action)
 		elif _can_take_pressure_movement():
-			_resolve_pressure_card_snapshot(action)
+			await _resolve_pressure_card_snapshot(action)
 		else:
 			log_message.emit("Pre-emptive card resolved during enemy approach.")
-			_resolve_pressure_card_snapshot(action)
+			await _resolve_pressure_card_snapshot(action)
 		return
 
 	var combat_action := _combat_action_from_queued_action(String(action.get("type", "")))

@@ -1,0 +1,16 @@
+[remap]
+
+importer="spine.atlas"
+type="SpineAtlasResource"
+uid="uid://bv6m2aie1lvud"
+path="res://.godot/imported/humanoid-combat.atlas-f3488a4d9b22ff42cd012c0f944b49ac.spatlas"
+
+[deps]
+
+source_file="res://experiments/spine_rig_prototype/export/humanoid-combat.atlas"
+dest_files=["res://.godot/imported/humanoid-combat.atlas-f3488a4d9b22ff42cd012c0f944b49ac.spatlas"]
+
+[params]
+
+normal_map_prefix="n"
+specular_map_prefix="s"

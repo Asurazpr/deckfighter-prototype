@@ -1,7 +1,7 @@
 class_name CombatStateMachine
 extends RefCounted
 
-enum State { NEUTRAL, SLOW_NEUTRAL, PLANNING, EXECUTING_QUEUE, PLAYER_PRESSURE, ENEMY_INTENT, REACTION_WINDOW, DEFENSE_REACTION, STANCE_BREAK, PUNISH, GAME_OVER }
+enum State { PRE_FIGHT, NEUTRAL, SLOW_NEUTRAL, PLANNING, EXECUTING_QUEUE, PLAYER_PRESSURE, ENEMY_INTENT, REACTION_WINDOW, DEFENSE_REACTION, STANCE_BREAK, PUNISH, GAME_OVER }
 
 var current_state := State.NEUTRAL
 var previous_state := State.NEUTRAL
@@ -11,6 +11,8 @@ func derive_from_manager(manager: Node) -> int:
 	var next_state := State.NEUTRAL
 	if manager.combat_over:
 		next_state = State.GAME_OVER
+	elif not manager.fight_started:
+		next_state = State.PRE_FIGHT
 	elif manager.punish_in_progress:
 		next_state = State.PUNISH
 	elif manager._is_enemy_broken():
@@ -28,6 +30,8 @@ func derive_from_manager(manager: Node) -> int:
 
 func state_name(state_id := current_state) -> String:
 	match state_id:
+		State.PRE_FIGHT:
+			return "Pre-Fight"
 		State.NEUTRAL:
 			return "Neutral"
 		State.SLOW_NEUTRAL:

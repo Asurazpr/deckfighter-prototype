@@ -130,11 +130,11 @@ func is_card_playable(index: int, allow_break_launcher := false) -> bool:
 		return false
 	var card: Resource = hand[index]
 	if not combo_route_active:
-		return card.id == "launcher" if allow_break_launcher else true
+		return _is_break_launcher(card) if allow_break_launcher else true
 
 	if current_follow_up_card_ids.has(card.id):
 		return true
-	return allow_break_launcher and card.id == "launcher" and not has_route_valid_playable_card()
+	return allow_break_launcher and _is_break_launcher(card) and not has_route_valid_playable_card()
 
 func is_card_route_valid(index: int, allow_break_launcher := false) -> bool:
 	return is_card_playable(index, allow_break_launcher)
@@ -195,20 +195,15 @@ func _draw_card() -> Resource:
 
 func _build_starter_deck() -> void:
 	card_library = {
-		"jab": CardDataScript.make("jab", "Jab", "Jab", "Fast starter that branches into pressure.", 6, 8, 1, 1, 5, 70.0, 0.0, -2, 75.0, 45.0, 55.0, -35.0, ["starter", "interrupt"], ["launcher"]),
-		"heavy_slash": CardDataScript.make("heavy_slash", "Heavy Slash", "Heavy", "Heavy finisher with real damage.", 16, 12, 6, 0, 12, 85.0, 0.0, -5, 100.0, 60.0, 70.0, -35.0, ["attack"]),
-		"step_slash": CardDataScript.make("step_slash", "Step Slash", "Step", "Forward slash that keeps the route alive.", 10, 10, 1, 1, 8, 85.0, 60.0, -3, 95.0, 55.0, 70.0, -35.0, ["starter", "movement", "interrupt"], ["launcher", "jab"]),
-		"guard_break": CardDataScript.make("guard_break", "Guard Break", "Break", "Heavy stance pressure into launcher routes.", 7, 26, 2, 1, 13, 75.0, 0.0, -4, 85.0, 60.0, 60.0, -35.0, ["pressure"], ["launcher", "heavy_slash"]),
-		"launcher": CardDataScript.make("launcher", "Launcher", "Launch", "Pops the enemy into an air follow.", 9, 12, 1, 2, 10, 70.0, 0.0, -4, 75.0, 80.0, 55.0, -55.0, ["launcher"], ["air_follow"]),
-		"air_follow": CardDataScript.make("air_follow", "Air Follow", "Air", "Airborne continuation.", 8, 8, 1, 1, 8, 90.0, 0.0, -3, 100.0, 80.0, 65.0, -80.0, ["air"], ["ground_smash", "gunshot"]),
-		"ground_smash": CardDataScript.make("ground_smash", "Ground Smash", "Smash", "Big knockdown with huge pushback, but very unsafe up close.", 26, 34, 8, 0, 14, 90.0, 0.0, -6, 115.0, 65.0, 70.0, -20.0, ["finisher"], ["reset_step"]),
-		"gunshot": CardDataScript.make("gunshot", "Gunshot", "Shot", "Quick ranged juggle extension.", 6, 6, 1, 1, 7, 220.0, 0.0, -1, 260.0, 35.0, 150.0, -40.0, ["ranged", "interrupt"], ["air_follow", "reset_step"]),
-		"reset_step": CardDataScript.make("reset_step", "Reset Step", "Reset", "Creates distance and safely exits pressure.", 0, 0, 1, 0, 0, 0.0, -100.0, 0, 0.0, 0.0, 0.0, 0.0, ["movement", "finisher"])
+		"light_punch": CardDataScript.make("light_punch", "Light Punch", "LP", "Fast Renka melee starter.", 6, 8, 1, 1, 5, 70.0, 0.0, -2, 75.0, 45.0, 55.0, -35.0, ["starter", "interrupt"], ["heavy_punch", "uppercut", "light_kick"], 5, 5, 8),
+		"heavy_punch": CardDataScript.make("heavy_punch", "Heavy Punch", "HP", "Committed Renka punch with strong damage.", 16, 12, 6, 0, 12, 85.0, 0.0, -5, 100.0, 60.0, 70.0, -35.0, ["attack"], ["uppercut"], 12, 12, 16),
+		"uppercut": CardDataScript.make("uppercut", "Uppercut", "Up", "Vertical launcher-style strike.", 9, 12, 1, 2, 10, 70.0, 0.0, -4, 75.0, 80.0, 55.0, -55.0, ["launcher", "interrupt"], ["heavy_kick"], 10, 10, 14),
+		"light_kick": CardDataScript.make("light_kick", "Light Kick", "LK", "Fast low-line kick for melee pressure.", 8, 8, 1, 1, 8, 82.0, 0.0, -3, 90.0, 44.0, 62.0, -22.0, ["attack", "interrupt"], ["heavy_kick", "light_punch"], 8, 8, 11),
+		"heavy_kick": CardDataScript.make("heavy_kick", "Heavy Kick", "HK", "Committed Renka kick finisher.", 18, 14, 6, 0, 13, 92.0, 0.0, -5, 112.0, 56.0, 72.0, -26.0, ["attack", "finisher"], [], 13, 13, 18)
 	}
 
 	var ids := [
-		"jab", "jab", "heavy_slash", "step_slash", "guard_break",
-		"launcher", "air_follow", "ground_smash", "gunshot", "reset_step"
+		"light_punch", "heavy_punch", "uppercut", "light_kick", "heavy_kick"
 	]
 
 	draw_pile.clear()
@@ -256,6 +251,9 @@ func _hand_has_card_id(card_id: String) -> bool:
 			return true
 	return false
 
+func _is_break_launcher(card: Resource) -> bool:
+	return card != null and (card.id == "uppercut" or card.id == "launcher" or card.tags.has("launcher"))
+
 func _find_card_index_by_instance_id(instance_id: int) -> int:
 	for i in range(hand.size()):
 		var card: Resource = hand[i]
@@ -283,6 +281,9 @@ func _card_from_snapshot(snapshot: Dictionary) -> Resource:
 	card.range = float(snapshot.get("range", 0.0))
 	card.movement_delta = float(snapshot.get("movement_delta", 0.0))
 	card.whiff_frame_penalty = int(snapshot.get("whiff_frame_penalty", 0))
+	card.hit_frame = int(snapshot.get("hit_frame", card.startup_frame))
+	card.active_start_frame = int(snapshot.get("active_start_frame", card.hit_frame))
+	card.active_end_frame = int(snapshot.get("active_end_frame", card.active_start_frame + 3))
 	card.hitbox_width = float(snapshot.get("hitbox_width", 0.0))
 	card.hitbox_height = float(snapshot.get("hitbox_height", 0.0))
 	card.hitbox_offset_x = float(snapshot.get("hitbox_offset_x", 0.0))

@@ -17,6 +17,9 @@ enum Target { ENEMY, SELF }
 @export var range := 0.0
 @export var movement_delta := 0.0
 @export var whiff_frame_penalty := 0
+@export var hit_frame := -1
+@export var active_start_frame := -1
+@export var active_end_frame := -1
 @export var hitbox_width := 0.0
 @export var hitbox_height := 0.0
 @export var hitbox_offset_x := 0.0
@@ -42,7 +45,10 @@ static func make(
 	_hitbox_offset_x: float,
 	_hitbox_offset_y: float,
 	_tags: Array[String] = [],
-	_allowed_follow_up_card_ids: Array[String] = []
+	_allowed_follow_up_card_ids: Array[String] = [],
+	_hit_frame := -1,
+	_active_start_frame := -1,
+	_active_end_frame := -1
 ) -> Resource:
 	var card := new()
 	card.id = _id
@@ -57,6 +63,9 @@ static func make(
 	card.range = _range
 	card.movement_delta = _movement_delta
 	card.whiff_frame_penalty = _whiff_frame_penalty
+	card.hit_frame = _hit_frame if _hit_frame >= 0 else _startup_frame
+	card.active_start_frame = _active_start_frame if _active_start_frame >= 0 else card.hit_frame
+	card.active_end_frame = _active_end_frame if _active_end_frame >= 0 else card.active_start_frame + 3
 	card.hitbox_width = _hitbox_width
 	card.hitbox_height = _hitbox_height
 	card.hitbox_offset_x = _hitbox_offset_x
