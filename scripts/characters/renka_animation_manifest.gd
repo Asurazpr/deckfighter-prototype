@@ -3,9 +3,9 @@ extends RefCounted
 
 const CHARACTER := "renka"
 const FPS := 30
-const RENDERS_ROOT := "res://assets/characters/renka/renders"
+const RENDERS_ROOT := "res://assets/characters/renka/renders/png_sequences"
 const SPRITESHEET_ROOT := "res://assets/characters/renka/renders/spritesheets"
-const USE_SPRITESHEETS := true
+const USE_SPRITESHEETS := false
 const ANIMATIONS := {
 	"idle": "renka_idle",
 	"run_forward": "renka_forward_running",

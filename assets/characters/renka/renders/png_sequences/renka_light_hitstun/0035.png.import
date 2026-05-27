@@ -3,15 +3,15 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://dwb4g4g1kcu70"
-path="res://.godot/imported/0035.png-dc099363ec57df1831d647a9a08793fb.ctex"
+path="res://.godot/imported/0035.png-fa54197a608be72f2d783fde1c97f6d0.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://assets/characters/renka/renders/renka_light_hitstun/0035.png"
-dest_files=["res://.godot/imported/0035.png-dc099363ec57df1831d647a9a08793fb.ctex"]
+source_file="res://assets/characters/renka/renders/png_sequences/renka_light_hitstun/0035.png"
+dest_files=["res://.godot/imported/0035.png-fa54197a608be72f2d783fde1c97f6d0.ctex"]
 
 [params]
 

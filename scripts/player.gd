@@ -108,6 +108,10 @@ func clear_timeline_visual() -> void:
 	current_animation_hit_level = ""
 	current_animation_hitbox_active = false
 	CombatAnimationDriver.clear(rig)
+	_set_state("READY")
+
+func clear_stale_defense_action() -> void:
+	clear_timeline_visual()
 
 func _play_readable_card_sequence(card: Resource) -> void:
 	if rig == null:

@@ -21,11 +21,13 @@ const HITBOX_PROFILES := {
 @export var cancel_window_progress := 0.82
 @export var block_hold_frame := 40
 @export var use_spritesheets := Manifest.USE_SPRITESHEETS
+@export var default_facing_sign := -1.0
 
 var renka_state := RenkaState.IDLE
 var action_state := ActionState.NEUTRAL
 var _current_renka_animation := ""
 var _animation_backend := "png_sequence"
+var _facing_sign := -1.0
 var is_action_locked := false
 var _cancel_window_open := false
 var followup_window_active := false
@@ -125,12 +127,18 @@ func clear_timeline_visual() -> void:
 	if action_state == ActionState.NEUTRAL:
 		_update_locomotion_animation()
 
+func clear_stale_defense_action() -> void:
+	if action_state != ActionState.BLOCK_START and action_state != ActionState.BLOCK_HOLD and action_state != ActionState.BLOCK_RECOVERY:
+		return
+	force_finish_action()
+
 func get_animation_debug() -> Dictionary:
 	var base := super.get_animation_debug()
 	base["animation_key"] = _current_renka_animation
 	base["pose_key"] = _current_renka_animation
 	base["current_pose_name"] = _current_renka_animation
 	base["rig_scale"] = animated_sprite.scale if animated_sprite != null else Vector2.ONE
+	base["facing"] = "right" if _facing_sign < 0.0 else "left"
 	base["renka_state"] = _state_name()
 	base["action_state"] = _action_state_name()
 	base["is_action_locked"] = is_action_locked
@@ -180,6 +188,7 @@ func force_finish_action() -> void:
 	_finish_action_to_neutral()
 
 func _configure_sprite() -> void:
+	_facing_sign = -1.0 if default_facing_sign < 0.0 else 1.0
 	var sprite_frames
 	var backend := "png_sequence"
 	if use_spritesheets:
@@ -236,8 +245,15 @@ func _apply_animation_visual_scale(animation_name: String) -> void:
 	var visual_scale := 1.0
 	if _animation_backend == "spritesheet":
 		visual_scale = float(Manifest.SPRITESHEET_VISUAL_SCALES.get(animation_name, 1.0))
-	var facing_sign := -1.0 if animated_sprite.scale.x <= 0.0 else 1.0
-	animated_sprite.scale = Vector2(facing_sign * absf(sprite_scale.x) * visual_scale, absf(sprite_scale.y) * visual_scale)
+	animated_sprite.centered = false
+	animated_sprite.offset = -sprite_pivot
+	animated_sprite.scale = Vector2(_facing_sign * absf(sprite_scale.x) * visual_scale, absf(sprite_scale.y) * visual_scale)
+
+func set_facing_direction(direction: float) -> void:
+	if direction == 0.0:
+		return
+	_facing_sign = -1.0 if direction > 0.0 else 1.0
+	_apply_animation_visual_scale(_current_renka_animation if _current_renka_animation != "" else "idle")
 
 func _animation_for_card(card: Resource) -> String:
 	var id := String(card.id)

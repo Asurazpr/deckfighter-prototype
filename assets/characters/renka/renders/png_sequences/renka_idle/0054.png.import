@@ -3,15 +3,15 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://c0sbuir53idue"
-path="res://.godot/imported/0054.png-e9eee192517f10283afc96a636a70f3e.ctex"
+path="res://.godot/imported/0054.png-effcc100e5ebd1faa1c26177bd53c43a.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://assets/characters/renka/renders/renka_idle/0054.png"
-dest_files=["res://.godot/imported/0054.png-e9eee192517f10283afc96a636a70f3e.ctex"]
+source_file="res://assets/characters/renka/renders/png_sequences/renka_idle/0054.png"
+dest_files=["res://.godot/imported/0054.png-effcc100e5ebd1faa1c26177bd53c43a.ctex"]
 
 [params]
 
