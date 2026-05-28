@@ -257,7 +257,10 @@ func _cannot_act_reason(context: Dictionary) -> String:
 	if bool(context.get("stance_protected", false)) or String(context.get("stance_state", "NORMAL")) != "NORMAL":
 		return "stance state %s, recovery %df" % [context.get("stance_state", "UNKNOWN"), int(context.get("stance_recovery_frames", 0))]
 	if bool(context.get("enemy_in_recovery", false)):
-		return "enemy is recovering"
+		var recovery_frames := int(context.get("enemy_recovery_frames", 0))
+		var enemy_action := String(context.get("enemy_current_action", "None"))
+		if recovery_frames > 0 or enemy_action != "None":
+			return "enemy is recovering"
 	if enemy == null or not enemy.can_act():
 		return "enemy node cannot act"
 	return ""

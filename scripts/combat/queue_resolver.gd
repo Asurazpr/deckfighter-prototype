@@ -73,6 +73,9 @@ func card_snapshot(index: int, allow_break_launcher: bool) -> Dictionary:
 		"range": card.range,
 		"movement_delta": card.movement_delta,
 		"whiff_frame_penalty": card.whiff_frame_penalty,
+		"hit_frame": card.hit_frame,
+		"active_start_frame": card.active_start_frame,
+		"active_end_frame": card.active_end_frame,
 		"hitbox_width": card.hitbox_width,
 		"hitbox_height": card.hitbox_height,
 		"hitbox_offset_x": card.hitbox_offset_x,
@@ -130,4 +133,3 @@ func queued_action_display_name(action: Dictionary) -> String:
 			return "Crouch Block"
 		_:
 			return String(action.get("type", "")).capitalize()
-

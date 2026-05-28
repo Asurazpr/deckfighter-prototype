@@ -39,14 +39,16 @@ func begin_action(actor_id: String, display_name: String, timeline_data: Diction
 	_update_phase()
 
 func begin_from_card(card: Resource) -> void:
+	var active_start := int(card.active_start_frame)
+	var active_end := maxi(active_start, int(card.active_end_frame))
 	begin_action("PLAYER", card.display_name, {
 		"startup_frames": int(card.startup_frame),
-		"active_frames": 3,
+		"active_frames": active_end - active_start + 1,
 		"recovery_frames": maxi(0, int(card.frame_cost)),
 		"movement_frames": int(card.startup_frame) if absf(float(card.movement_delta)) > 0.0 else 0,
-		"impact_frame": int(card.startup_frame),
-		"hitbox_on_frame": int(card.startup_frame),
-		"hitbox_off_frame": int(card.startup_frame) + 3,
+		"impact_frame": int(card.hit_frame),
+		"hitbox_on_frame": active_start,
+		"hitbox_off_frame": active_end + 1,
 		"animation_key": String(card.id)
 	})
 

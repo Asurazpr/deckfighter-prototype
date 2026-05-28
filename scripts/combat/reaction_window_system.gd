@@ -43,8 +43,8 @@ func start(intent: String, startup_frames: int) -> void:
 	impact_resolution_text = "Pending"
 	manager.log_message.emit("Reaction window started: %s, %.1fs." % [intent, total_seconds])
 
-func tick(delta: float, waiting_for_defense: bool, effective_startup_frames: int, current_intent: String) -> Dictionary:
-	if not active or resolving or not waiting_for_defense:
+func tick(delta: float, state_allows_reaction: bool, effective_startup_frames: int, current_intent: String) -> Dictionary:
+	if not active or resolving or not state_allows_reaction:
 		return {"should_resolve": false}
 	var real_delta := delta / maxf(Engine.time_scale, 0.001)
 	remaining_seconds = maxf(0.0, remaining_seconds - real_delta)
@@ -156,6 +156,8 @@ func _update_live_guard(elapsed_startup_frames: int, real_delta: float, current_
 	if live_guard == "":
 		if current_guard_input != "":
 			manager.log_message.emit("Guard released.")
+			if player != null and player.has_method("release_block_action"):
+				player.release_block_action()
 		reset_guard_state()
 		reaction_choice = "NONE"
 		return
