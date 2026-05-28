@@ -1,6 +1,8 @@
 class_name RenkaPlayer
 extends Player
 
+signal action_animation_finished(animation_name: String, action_state_name: String)
+
 const SpriteFramesLoader := preload("res://scripts/animation/png_sequence_sprite_frames_loader.gd")
 const TexturePackerSpriteFramesLoader := preload("res://scripts/animation/texture_packer_sprite_frames_loader.gd")
 const Manifest := preload("res://scripts/characters/renka_animation_manifest.gd")
@@ -171,6 +173,15 @@ func open_followup_window() -> void:
 	followup_window_active = true
 	_unlock_action()
 
+func finish_action_from_combat_manager(reason := "") -> void:
+	_active_card = null
+	_hit_confirm_token += 1
+	_cancel_window_open = false
+	followup_window_active = false
+	_block_release_requested = false
+	_set_attack_hitbox_active(false)
+	_finish_action_to_neutral()
+
 func release_block_action() -> void:
 	if action_state != ActionState.BLOCK_START and action_state != ActionState.BLOCK_HOLD:
 		return
@@ -308,11 +319,11 @@ func _state_for_timeline(animation_name: String, phase_name: String) -> int:
 func _on_animation_finished() -> void:
 	if action_state == ActionState.BLOCK_START:
 		_hold_block_frame()
+		action_animation_finished.emit(_current_renka_animation, _action_state_name())
 		return
 	if action_state == ActionState.ATTACK_STARTUP or action_state == ActionState.ATTACK_ACTIVE or action_state == ActionState.ATTACK_RECOVERY or action_state == ActionState.BLOCK_RECOVERY or action_state == ActionState.HITSTUN:
-		_active_card = null
 		_set_attack_hitbox_active(false)
-		_finish_action_to_neutral()
+		action_animation_finished.emit(_current_renka_animation, _action_state_name())
 
 func _state_name() -> String:
 	match renka_state:

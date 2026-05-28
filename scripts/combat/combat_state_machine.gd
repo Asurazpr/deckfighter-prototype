@@ -50,7 +50,7 @@ func current_phase_name() -> String:
 
 func current_actor() -> String:
 	match current_state:
-		State.EXECUTING_QUEUE, State.EXECUTING_PLAYER_ACTION, State.PLAYER_PRESSURE, State.PLAYER_RECOVERY:
+		State.EXECUTING_QUEUE, State.EXECUTING_PLAYER_ACTION, State.PLAYER_PRESSURE, State.PLAYER_RECOVERY, State.STANCE_BREAK:
 			return "player"
 		State.ENEMY_INTENT, State.REACTION_WINDOW, State.ENEMY_ACTIVE, State.ENEMY_RECOVERY:
 			return "enemy"
@@ -176,10 +176,10 @@ func is_slow_neutral() -> bool:
 	return current_state == State.SLOW_NEUTRAL
 
 func can_accept_queue_input() -> bool:
-	return current_state == State.SLOW_NEUTRAL or current_state == State.ENEMY_INTENT or current_state == State.PLAYER_PRESSURE or current_state == State.PLAYER_RECOVERY
+	return current_state == State.SLOW_NEUTRAL or current_state == State.ENEMY_INTENT or current_state == State.PLAYER_PRESSURE or current_state == State.PLAYER_RECOVERY or current_state == State.STANCE_BREAK
 
 func can_execute_queue() -> bool:
-	return current_state == State.SLOW_NEUTRAL or current_state == State.ENEMY_INTENT or current_state == State.PLAYER_PRESSURE or current_state == State.PLAYER_RECOVERY
+	return current_state == State.SLOW_NEUTRAL or current_state == State.ENEMY_INTENT or current_state == State.PLAYER_PRESSURE or current_state == State.PLAYER_RECOVERY or current_state == State.STANCE_BREAK
 
 func can_take_pressure_movement(frame_advantage: int, enemy_break_frames: int, player_action_ready := true) -> bool:
 	if not player_action_ready:
