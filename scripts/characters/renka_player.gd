@@ -114,6 +114,8 @@ func show_timeline_phase(action_name: String, phase_name: String, phase_progress
 	_enter_renka_state(state, animation_name)
 
 func clear_timeline_visual() -> void:
+	var previous_action := current_animation_action
+	var attack_visual_continues := action_state == ActionState.ATTACK_STARTUP or action_state == ActionState.ATTACK_ACTIVE or action_state == ActionState.ATTACK_RECOVERY
 	current_animation_action = "None"
 	current_animation_phase = "DONE"
 	current_animation_progress = 0.0
@@ -122,10 +124,12 @@ func clear_timeline_visual() -> void:
 	_set_attack_hitbox_active(false)
 	if action_state == ActionState.BLOCK_START or action_state == ActionState.BLOCK_HOLD:
 		release_block_action()
-	elif action_state != ActionState.ATTACK_STARTUP and action_state != ActionState.ATTACK_ACTIVE and action_state != ActionState.ATTACK_RECOVERY:
+	elif not attack_visual_continues:
 		_finish_action_to_neutral()
 	if action_state == ActionState.NEUTRAL:
 		_update_locomotion_animation()
+	elif attack_visual_continues:
+		_set_state("%s\nRECOVERY" % (previous_action.to_upper() if previous_action != "" and previous_action != "None" else "ACTION"))
 
 func clear_stale_defense_action() -> void:
 	if action_state != ActionState.BLOCK_START and action_state != ActionState.BLOCK_HOLD and action_state != ActionState.BLOCK_RECOVERY:
@@ -334,7 +338,13 @@ func _finish_action_to_neutral() -> void:
 	_cancel_window_open = false
 	followup_window_active = false
 	_block_release_requested = false
+	current_animation_action = "None"
+	current_animation_phase = "DONE"
+	current_animation_progress = 0.0
+	current_animation_hit_level = ""
+	current_animation_hitbox_active = false
 	_unlock_action()
+	_set_state("READY")
 	_enter_renka_state(RenkaState.IDLE, "idle")
 
 func _update_action_state_from_timeline(animation_name: String, phase_name: String, phase_progress: float) -> void:

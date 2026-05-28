@@ -1188,6 +1188,7 @@ func _try_interrupt_with_card(index: int) -> void:
 		_clamp_duel_distance()
 		await _wait_for_player_hit_confirm(card)
 		_set_player_attack_hitbox(_make_card_hitbox(card))
+		_complete_player_card_timeline(card)
 		log_message.emit("Interrupt failed: out of range.")
 		log_message.emit("Card whiffed: hitbox missed.")
 		log_message.emit("No follow-up draw: card did not connect.")
@@ -1261,6 +1262,7 @@ func _try_interrupt_with_card_snapshot(snapshot: Dictionary) -> void:
 		_clamp_duel_distance()
 		await _wait_for_player_hit_confirm(card)
 		_set_player_attack_hitbox(_make_card_hitbox(card))
+		_complete_player_card_timeline(card)
 		log_message.emit("Interrupt failed: out of range.")
 		log_message.emit("Card whiffed: hitbox missed.")
 		log_message.emit("No follow-up draw: card did not connect.")
@@ -1305,8 +1307,9 @@ func _resolve_intent_trade(index: int, preview_card: Resource, enemy_startup_aft
 	remaining_startup_frames = maxi(0, enemy_startup_after_card)
 	Engine.time_scale = 1.0
 	_set_enemy_attack_hitbox(_make_enemy_attack_hitbox(result))
-	player.take_damage(result["damage"])
 	_apply_hit_stance_damage(preview_card, "trade")
+	_complete_player_card_timeline(preview_card)
+	player.take_damage(result["damage"])
 	player.set_free_movement_enabled(false)
 	var traded_intent := current_enemy_intent
 	current_enemy_intent = ""
@@ -1333,8 +1336,9 @@ func _resolve_intent_trade_snapshot(snapshot: Dictionary, preview_card: Resource
 	remaining_startup_frames = maxi(0, enemy_startup_after_card)
 	Engine.time_scale = 1.0
 	_set_enemy_attack_hitbox(_make_enemy_attack_hitbox(result))
-	player.take_damage(result["damage"])
 	_apply_hit_stance_damage(preview_card, "trade_snapshot")
+	_complete_player_card_timeline(preview_card)
+	player.take_damage(result["damage"])
 	player.set_free_movement_enabled(false)
 	var traded_intent := current_enemy_intent
 	current_enemy_intent = ""
@@ -1431,6 +1435,7 @@ func _resolve_pressure_card(index: int, route_valid: bool, starts_new_route: boo
 		log_message.emit("Card whiffed: hitbox missed.")
 		log_message.emit("No follow-up draw: card did not connect.")
 		_record_card_action_event(preview_card, "whiff", "pressure_card")
+		_complete_player_card_timeline(preview_card)
 		deck_manager.discard_card_unrestricted(index)
 		_resolve_card_frame_advantage(preview_card.whiff_frame_penalty)
 		return
@@ -1453,6 +1458,7 @@ func _resolve_pressure_card(index: int, route_valid: bool, starts_new_route: boo
 		log_message.emit("Combo route broken.")
 	_log_card_hit_summary(card, stance_protected)
 	_record_card_action_event(card, "hit", "pressure_card")
+	_complete_player_card_timeline(card)
 	if bool(repeat_info["force_end"]):
 		end_player_pressure("Repeated route exhausted.", mini(frame_delta, -1))
 		return
@@ -1479,6 +1485,7 @@ func _resolve_pressure_card_snapshot(snapshot: Dictionary) -> void:
 		log_message.emit("Card whiffed: hitbox missed.")
 		log_message.emit("No follow-up draw: card did not connect.")
 		_record_card_action_event(preview_card, "whiff", "pressure_card_snapshot")
+		_complete_player_card_timeline(preview_card)
 		deck_manager.discard_queued_card_snapshot(snapshot)
 		_resolve_card_frame_advantage(preview_card.whiff_frame_penalty)
 		return
@@ -1498,6 +1505,7 @@ func _resolve_pressure_card_snapshot(snapshot: Dictionary) -> void:
 		log_message.emit("Combo route broken.")
 	_log_card_hit_summary(card, stance_protected)
 	_record_card_action_event(card, "hit", "pressure_card_snapshot")
+	_complete_player_card_timeline(card)
 	if bool(repeat_info["force_end"]):
 		end_player_pressure("Repeated route exhausted.", mini(frame_delta, -1))
 		return
@@ -1525,6 +1533,7 @@ func _resolve_player_card(card: Resource, bonus_frame_advantage := 0, apply_move
 		log_message.emit("Card whiffed: hitbox missed.")
 		log_message.emit("No follow-up draw: card did not connect.")
 		_record_card_action_event(card, "whiff", "player_card")
+		_complete_player_card_timeline(card)
 		_resolve_card_frame_advantage(card.whiff_frame_penalty)
 		return
 
@@ -1539,6 +1548,7 @@ func _resolve_player_card(card: Resource, bonus_frame_advantage := 0, apply_move
 		log_message.emit("Combo route broken.")
 	_log_card_hit_summary(card, stance_protected)
 	_record_card_action_event(card, "hit", "player_card")
+	_complete_player_card_timeline(card)
 	if bool(repeat_info["force_end"]):
 		end_player_pressure("Repeated route exhausted.", mini(frame_delta, -1))
 		return
@@ -1687,6 +1697,24 @@ func _clear_attack_hitboxes() -> void:
 		combat_timeline.mark_recovery()
 		_apply_timeline_visual()
 	hitbox_system.clear_attack_hitboxes()
+
+func _complete_player_card_timeline(card: Resource) -> void:
+	if combat_timeline == null or combat_timeline.actor != "PLAYER" or combat_timeline.phase == CombatTimelineScript.Phase.DONE:
+		return
+	var active_remaining := maxi(0, combat_timeline.hitbox_off_frame - combat_timeline.elapsed_frames)
+	if active_remaining > 0:
+		combat_timeline.advance_frames(active_remaining)
+		_apply_timeline_visual()
+	hitbox_system.clear_attack_hitboxes()
+	var recovery_remaining := maxi(0, combat_timeline.total_frames() - combat_timeline.elapsed_frames)
+	if recovery_remaining > 0:
+		combat_timeline.advance_frames(recovery_remaining)
+		if combat_timeline.phase != CombatTimelineScript.Phase.DONE:
+			_apply_timeline_visual()
+	if combat_timeline.phase == CombatTimelineScript.Phase.DONE:
+		combat_timeline.finish_action()
+		if player != null and player.has_method("clear_timeline_visual"):
+			player.clear_timeline_visual()
 
 func _tick_debug_hitboxes(delta: float) -> void:
 	hitbox_system.tick_debug_hitboxes(delta)
