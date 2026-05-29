@@ -10,14 +10,18 @@ const KAI_ATTACKS := {
 	"heavy_kick": {"id": "heavy_kick", "name": "Kai Heavy Kick", "type": "HIGH", "damage": 14, "stance_damage": 0, "startup": 6, "startup_frame": 6, "active": 3, "recovery": 14, "range_min": 0.0, "range_max": 80.0, "range": 80.0, "counter_damage": 18, "hit_level": "HIGH", "on_hit_adv": 1, "on_block_adv": -2, "hitbox_width": 85.0, "hitbox_height": 45.0, "hitbox_offset_x": 42.5, "hitbox_offset_y": -65.0, "animation_key": "heavy_kick", "tags": ["fast", "anti_air"], "ai_use_case": ["fast_punish", "anti_air", "mash"]},
 	"heavy_punch": {"id": "heavy_punch", "name": "Kai Heavy Punch", "type": "OVERHEAD", "damage": 16, "stance_damage": 0, "startup": 15, "startup_frame": 15, "active": 4, "recovery": 22, "range_min": 0.0, "range_max": 85.0, "range": 85.0, "counter_damage": 22, "hit_level": "OVERHEAD", "on_hit_adv": 3, "on_block_adv": -6, "hitbox_width": 100.0, "hitbox_height": 75.0, "hitbox_offset_x": 50.0, "hitbox_offset_y": -70.0, "animation_key": "heavy_punch", "tags": ["slow", "starter"], "ai_use_case": ["overhead", "pressure_starter", "stance_breaker"]}
 }
+const DEBUG_ATTACK_CYCLE := ["light_punch", "light_kick", "heavy_kick", "heavy_punch"]
 
 @export var sprite_scale := Vector2(0.22, 0.22)
 @export var sprite_pivot := Vector2(970.0, 984.0)
 @export var source_faces_left := true
+@export var use_debug_attack_cycle := true
+@export var debug_cycle_ignores_range := true
 
 var _current_kai_animation := ""
 var _facing_sign := 1.0
 var _animation_backend := "png_sequence"
+var _debug_attack_cycle_index := 0
 
 @onready var animated_sprite: AnimatedSprite2D = $AnimatedSprite2D
 
@@ -32,6 +36,29 @@ func _ready() -> void:
 
 func get_attacks() -> Dictionary:
 	return KAI_ATTACKS
+
+func choose_debug_attack_id(context: Dictionary) -> String:
+	if not use_debug_attack_cycle:
+		return ""
+	var distance := float(context.get("distance", 9999.0))
+	var sequence_size := DEBUG_ATTACK_CYCLE.size()
+	if sequence_size <= 0:
+		return ""
+	var next_action_id := String(DEBUG_ATTACK_CYCLE[_debug_attack_cycle_index % sequence_size])
+	if debug_cycle_ignores_range:
+		_debug_attack_cycle_index = (_debug_attack_cycle_index + 1) % sequence_size
+		print("Kai debug attack cycle: %s -> next index %d" % [next_action_id, _debug_attack_cycle_index])
+		return next_action_id
+	for i in sequence_size:
+		var action_id := String(DEBUG_ATTACK_CYCLE[(_debug_attack_cycle_index + i) % sequence_size])
+		var action: Dictionary = KAI_ATTACKS[action_id]
+		var range_min := float(action.get("range_min", 0.0))
+		var range_max := float(action.get("range_max", action.get("range", 0.0)))
+		if distance >= range_min and distance <= range_max:
+			_debug_attack_cycle_index = (_debug_attack_cycle_index + i + 1) % sequence_size
+			print("Kai debug attack cycle: %s -> next index %d" % [action_id, _debug_attack_cycle_index])
+			return action_id
+	return ""
 
 func start_attack(attack_id := "") -> void:
 	super.start_attack(attack_id)
@@ -85,6 +112,8 @@ func get_animation_debug() -> Dictionary:
 	data["rig_scale"] = animated_sprite.scale if animated_sprite != null else Vector2.ONE
 	data["facing"] = "left" if _facing_sign > 0.0 else "right"
 	data["backend"] = _animation_backend
+	data["debug_attack_cycle_index"] = _debug_attack_cycle_index
+	data["debug_attack_cycle_next"] = DEBUG_ATTACK_CYCLE[_debug_attack_cycle_index % DEBUG_ATTACK_CYCLE.size()]
 	return data
 
 func _set_idle() -> void:

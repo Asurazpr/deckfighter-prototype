@@ -90,6 +90,10 @@ func choose_intent(context: Dictionary) -> Dictionary:
 		_set_state(DecisionState.STANCE_BROKEN if String(context.get("stance_state", "")) != "NORMAL" else DecisionState.RECOVERING, cannot_act_reason, "None", 0.0, 0)
 		return {}
 
+	var debug_cycle_decision := _debug_cycle_decision(context)
+	if not debug_cycle_decision.is_empty():
+		return debug_cycle_decision
+
 	var best_action := {}
 	var best_score := -99999.0
 	var best_effective_startup := 0
@@ -262,6 +266,33 @@ func _attack_startup(action_id: String, fallback := 0) -> int:
 		var action: Dictionary = attacks[action_id]
 		return int(action.get("startup_frame", action.get("startup", fallback)))
 	return fallback
+
+func _debug_cycle_decision(context: Dictionary) -> Dictionary:
+	if enemy == null or not enemy.has_method("choose_debug_attack_id"):
+		return {}
+	var action_id := String(enemy.choose_debug_attack_id(context))
+	var attacks := _enemy_attacks()
+	if action_id == "" or not attacks.has(action_id):
+		return {}
+	var action: Dictionary = attacks[action_id]
+	var initiative_offset := int(context.get("initiative_offset", 0))
+	var effective_startup: int = frame_system.effective_startup(int(action.get("startup_frame", action.get("startup", 0))), initiative_offset)
+	effective_startup += _reaction_delay()
+	var distance := float(context.get("distance", 9999.0))
+	var spacing := "debug cycle distance %.0f within %.0f-%.0f" % [distance, float(action.get("range_min", 0.0)), float(action.get("range_max", action.get("range", 0.0)))]
+	_set_state(_state_for_action(action, context), "Kai debug attack cycle selected %s for defense testing." % action_id, action_id, 75.0, effective_startup)
+	last_spacing_result = spacing
+	last_profile_modifiers = "debug cycle override; %s" % last_profile_modifiers
+	return {
+		"action_id": action_id,
+		"action": action,
+		"score": 75.0,
+		"effective_startup": effective_startup,
+		"state": last_state,
+		"reason": last_reason,
+		"spacing": spacing,
+		"punish_candidates": []
+	}
 
 func _cannot_act_reason(context: Dictionary) -> String:
 	if bool(context.get("combat_over", false)):

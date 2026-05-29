@@ -92,7 +92,7 @@ func tick(delta: float) -> Dictionary:
 	_advance_combat_time(delta)
 	approach_target_distance = _current_approach_target_distance()
 	var previous_distance := movement_system.distance_between_fighters()
-	player_live_movement_active = Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_D)
+	player_live_movement_active = _input_direction() != 0.0
 	_tick_player_step(delta)
 	_tick_enemy_approach_step(delta)
 	movement_system.clamp_duel_distance()
@@ -214,6 +214,8 @@ func _tick_enemy_approach_step(real_delta: float) -> void:
 		enemy_movement_frames_remaining = BASIC_STEP_TRAVEL_FRAMES
 
 func _input_direction() -> float:
+	if player != null and player.has_method("is_crouching") and player.is_crouching():
+		return 0.0
 	var direction := 0.0
 	if Input.is_key_pressed(KEY_A):
 		direction -= 1.0

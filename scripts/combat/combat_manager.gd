@@ -47,6 +47,8 @@ const DEBUG_ATTACK_HITBOX_LIFETIME := 0.25
 @export var trade_enemy_recovery_frames := 26
 @export var live_neutral_player_speed := 140.0
 @export var live_neutral_enemy_speed := 70.0
+@export var reaction_player_move_speed := 180.0
+@export var reaction_jump_hurtbox_lift := 45.0
 @export var enemy_intent_range := 95.0
 @export var slow_neutral_intent_delay := 1.2
 @export var defensive_reaction_wait_frames := 20
@@ -1989,6 +1991,12 @@ func get_player_pushbox() -> Rect2:
 func get_enemy_pushbox() -> Rect2:
 	return hitbox_system.enemy_pushbox()
 
+func get_player_attack_hitbox() -> Rect2:
+	return hitbox_system.player_active_attack_hitbox()
+
+func get_enemy_attack_hitbox() -> Rect2:
+	return hitbox_system.enemy_active_attack_hitbox()
+
 func _make_card_hitbox(card: Resource) -> Rect2:
 	return hitbox_system.card_hitbox(card)
 
@@ -2132,6 +2140,43 @@ func _apply_pressure_movement(action: String) -> void:
 
 func _action_startup(action: String) -> int:
 	return movement_system.action_startup(action)
+
+func apply_reaction_live_movement(direction: float, real_delta: float) -> void:
+	if combat_over or not _is_reaction_window_state() or is_player_crouching():
+		return
+	player.global_position.x += clampf(direction, -1.0, 1.0) * reaction_player_move_speed * real_delta * _reaction_movement_time_scale()
+	_clamp_duel_distance()
+
+func apply_reaction_backstep() -> void:
+	if combat_over or not _is_reaction_window_state() or is_player_crouching():
+		return
+	movement_system.move_player_away_from_enemy(80.0 * _reaction_movement_time_scale())
+	_clamp_duel_distance()
+
+func apply_reaction_jump_movement() -> void:
+	if combat_over or not _is_reaction_window_state():
+		return
+	var scaled_jump_delta := 55.0 * _reaction_movement_time_scale()
+	if Input.is_key_pressed(KEY_D):
+		movement_system.move_player_toward_enemy(scaled_jump_delta)
+		log_message.emit("Player jumped forward.")
+	elif Input.is_key_pressed(KEY_A):
+		movement_system.move_player_away_from_enemy(scaled_jump_delta)
+		log_message.emit("Player jumped back.")
+	else:
+		log_message.emit("Player neutral jumped.")
+	_clamp_duel_distance()
+
+func _reaction_movement_time_scale() -> float:
+	return clampf(Engine.time_scale, 0.0, 1.0)
+
+func is_player_crouching() -> bool:
+	return player != null and player.has_method("is_crouching") and player.is_crouching()
+
+func get_player_hurtbox_offset() -> Vector2:
+	if reaction_window_system != null and reaction_window_system.jump_active:
+		return Vector2(0.0, -reaction_jump_hurtbox_lift)
+	return Vector2.ZERO
 
 func _advance_enemy_startup(cost: int) -> void:
 	advance_combat_frames(cost, true, false)

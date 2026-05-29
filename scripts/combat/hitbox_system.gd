@@ -34,12 +34,20 @@ func enemy_pushbox() -> Rect2:
 func player_hurtbox() -> Rect2:
 	var size := Vector2(player.hurtbox_width, player.hurtbox_height)
 	var fallback := Rect2(Vector2(player.global_position.x - size.x * 0.5, player.global_position.y - size.y), size)
-	return _shape_rect(player, "Hurtbox/CollisionShape2D", fallback)
+	var rect := _shape_rect(player, "Hurtbox/CollisionShape2D", fallback)
+	rect.position += _player_hurtbox_offset()
+	return rect
 
 func enemy_hurtbox() -> Rect2:
 	var size := Vector2(enemy.hurtbox_width, enemy.hurtbox_height)
 	var fallback := Rect2(Vector2(enemy.global_position.x - size.x * 0.5, enemy.global_position.y - size.y), size)
 	return _shape_rect(enemy, "Hurtbox/CollisionShape2D", fallback)
+
+func player_active_attack_hitbox() -> Rect2:
+	return _active_attack_rect(player)
+
+func enemy_active_attack_hitbox() -> Rect2:
+	return _active_attack_rect(enemy)
 
 func card_hitbox(card: Resource) -> Rect2:
 	return card_hitbox_at(card, player.global_position)
@@ -154,6 +162,22 @@ func _sync_attack_area(actor: Node2D, hitbox: Rect2, active: bool) -> void:
 	area.global_position = hitbox.position + hitbox.size * 0.5
 	shape_node.position = Vector2.ZERO
 	rect_shape.size = hitbox.size
+
+func _active_attack_rect(actor: Node2D) -> Rect2:
+	if actor == null:
+		return Rect2()
+	var area := actor.get_node_or_null("AttackHitbox") as Area2D
+	if area == null or not area.visible:
+		return Rect2()
+	var shape_node := area.get_node_or_null("CollisionShape2D") as CollisionShape2D
+	if shape_node == null or shape_node.disabled:
+		return Rect2()
+	return _shape_rect(actor, "AttackHitbox/CollisionShape2D", Rect2())
+
+func _player_hurtbox_offset() -> Vector2:
+	if manager != null and manager.has_method("get_player_hurtbox_offset"):
+		return manager.get_player_hurtbox_offset()
+	return Vector2.ZERO
 
 func _sync_manager() -> void:
 	manager.last_player_attack_hitbox = last_player_attack_hitbox

@@ -20,6 +20,10 @@ func route_key_event(event: InputEvent, manager: Node, viewport: Viewport) -> bo
 			manager.reaction_window_system.request_jump_evade()
 			viewport.set_input_as_handled()
 			return true
+		if key_event.keycode == KEY_L:
+			manager.reaction_window_system.request_backstep_evade()
+			viewport.set_input_as_handled()
+			return true
 		return false
 
 	if manager.can_accept_tactical_queue_input():

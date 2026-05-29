@@ -36,6 +36,7 @@ var followup_window_active := false
 var _active_card: Resource
 var _hit_confirm_token := 0
 var _block_release_requested := false
+var _visual_return_pending := false
 
 @onready var animated_sprite: AnimatedSprite2D = $AnimatedSprite2D
 @onready var attack_hitbox: Area2D = $AttackHitbox
@@ -44,6 +45,8 @@ var _block_release_requested := false
 
 func _ready() -> void:
 	super._ready()
+	if body != null:
+		body.visible = false
 	if rig != null:
 		rig.visible = false
 	_configure_sprite()
@@ -89,14 +92,12 @@ func wait_for_action_hit_confirm(card: Resource) -> void:
 	if token != _hit_confirm_token:
 		return
 	action_state = ActionState.ATTACK_ACTIVE
-	_set_attack_hitbox_active(true)
 	var active_duration := maxf(0.01, float(maxi(1, active_end_frame - hit_frame + 1)) / fps)
 	_disable_attack_hitbox_after(token, active_duration)
 
 func _disable_attack_hitbox_after(token: int, duration: float) -> void:
 	await get_tree().create_timer(duration, false, true).timeout
 	if token == _hit_confirm_token:
-		_set_attack_hitbox_active(false)
 		if action_state == ActionState.ATTACK_ACTIVE:
 			action_state = ActionState.ATTACK_RECOVERY
 
@@ -106,9 +107,6 @@ func show_timeline_phase(action_name: String, phase_name: String, phase_progress
 	current_animation_progress = phase_progress
 	current_animation_hit_level = hit_level
 	current_animation_hitbox_active = hitbox_active
-	if hitbox_active:
-		_configure_attack_hitbox(_animation_for_timeline(action_name, hit_level))
-	_set_attack_hitbox_active(hitbox_active)
 	_set_state("%s\n%s" % [action_name.to_upper(), phase_name])
 	var animation_name := _animation_for_timeline(action_name, hit_level)
 	var state := _state_for_timeline(animation_name, phase_name)
@@ -117,21 +115,25 @@ func show_timeline_phase(action_name: String, phase_name: String, phase_progress
 
 func clear_timeline_visual() -> void:
 	var previous_action := current_animation_action
-	var attack_visual_continues := action_state == ActionState.ATTACK_STARTUP or action_state == ActionState.ATTACK_ACTIVE or action_state == ActionState.ATTACK_RECOVERY
+	var attack_visual_continues := action_state == ActionState.ATTACK_STARTUP \
+		or action_state == ActionState.ATTACK_ACTIVE \
+		or action_state == ActionState.ATTACK_RECOVERY \
+		or (_visual_return_pending and renka_state == RenkaState.ATTACKING and animated_sprite != null and animated_sprite.is_playing())
 	current_animation_action = "None"
 	current_animation_phase = "DONE"
 	current_animation_progress = 0.0
 	current_animation_hit_level = ""
 	current_animation_hitbox_active = false
 	_set_attack_hitbox_active(false)
+	if attack_visual_continues:
+		_set_state("%s\nRECOVERY" % (previous_action.to_upper() if previous_action != "" and previous_action != "None" else "ACTION"))
+		return
 	if action_state == ActionState.BLOCK_START or action_state == ActionState.BLOCK_HOLD:
 		release_block_action()
-	elif not attack_visual_continues:
+	else:
 		_finish_action_to_neutral()
 	if action_state == ActionState.NEUTRAL:
 		_update_locomotion_animation()
-	elif attack_visual_continues:
-		_set_state("%s\nRECOVERY" % (previous_action.to_upper() if previous_action != "" and previous_action != "None" else "ACTION"))
 
 func clear_stale_defense_action() -> void:
 	if action_state != ActionState.BLOCK_START and action_state != ActionState.BLOCK_HOLD and action_state != ActionState.BLOCK_RECOVERY:
@@ -150,6 +152,7 @@ func get_animation_debug() -> Dictionary:
 	base["is_action_locked"] = is_action_locked
 	base["cancel_window_open"] = _cancel_window_open
 	base["followup_window_active"] = followup_window_active
+	base["visual_return_pending"] = _visual_return_pending
 	return base
 
 func can_start_card_action() -> bool:
@@ -180,6 +183,17 @@ func finish_action_from_combat_manager(reason := "") -> void:
 	followup_window_active = false
 	_block_release_requested = false
 	_set_attack_hitbox_active(false)
+	if renka_state == RenkaState.ATTACKING and animated_sprite != null and animated_sprite.is_playing():
+		action_state = ActionState.NEUTRAL
+		current_animation_action = "None"
+		current_animation_phase = "DONE"
+		current_animation_progress = 0.0
+		current_animation_hit_level = ""
+		current_animation_hitbox_active = false
+		_unlock_action()
+		_visual_return_pending = true
+		_set_state("READY")
+		return
 	_finish_action_to_neutral()
 
 func release_block_action() -> void:
@@ -199,6 +213,7 @@ func force_finish_action() -> void:
 	_cancel_window_open = false
 	followup_window_active = false
 	_block_release_requested = false
+	_visual_return_pending = false
 	_set_attack_hitbox_active(false)
 	_finish_action_to_neutral()
 
@@ -235,11 +250,23 @@ func _configure_sprite() -> void:
 	_set_attack_hitbox_active(false)
 
 func _update_locomotion_animation() -> void:
+	if crouching:
+		_set_state("CROUCH")
+		_enter_renka_state(RenkaState.IDLE, "idle")
+		return
 	if input_enabled and free_movement_enabled and absf(velocity.x) > 4.0:
 		var moving_forward := signf(velocity.x) >= 0.0
 		_enter_renka_state(RenkaState.RUNNING, "run_forward" if moving_forward else "run_backward")
 	else:
 		_enter_renka_state(RenkaState.IDLE, "idle")
+
+func can_enter_neutral_crouch() -> bool:
+	return input_enabled \
+		and action_state == ActionState.NEUTRAL \
+		and not _visual_return_pending \
+		and renka_state != RenkaState.ATTACKING \
+		and renka_state != RenkaState.BLOCKING \
+		and renka_state != RenkaState.HITSTUN
 
 func _enter_renka_state(next_state: int, animation_name: String) -> void:
 	renka_state = next_state
@@ -317,6 +344,11 @@ func _state_for_timeline(animation_name: String, phase_name: String) -> int:
 	return RenkaState.IDLE
 
 func _on_animation_finished() -> void:
+	if _visual_return_pending:
+		_visual_return_pending = false
+		_finish_action_to_neutral()
+		action_animation_finished.emit(_current_renka_animation, _action_state_name())
+		return
 	if action_state == ActionState.BLOCK_START:
 		_hold_block_frame()
 		action_animation_finished.emit(_current_renka_animation, _action_state_name())
@@ -349,6 +381,7 @@ func _finish_action_to_neutral() -> void:
 	_cancel_window_open = false
 	followup_window_active = false
 	_block_release_requested = false
+	_visual_return_pending = false
 	current_animation_action = "None"
 	current_animation_phase = "DONE"
 	current_animation_progress = 0.0

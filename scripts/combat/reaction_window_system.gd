@@ -24,6 +24,9 @@ var jump_active := false
 var jump_start_elapsed_frame := -1
 var jump_startup_frames_remaining := 0.0
 var jump_input_progress := -1.0
+var backstep_started := false
+var live_movement_active := false
+var last_live_movement_active := false
 
 func setup(manager_ref: Node, player_ref: Node, perfect_window_start: float, guard_startup: int) -> void:
 	manager = manager_ref
@@ -94,6 +97,9 @@ func reset_reaction_choice_state() -> void:
 	jump_start_elapsed_frame = -1
 	jump_startup_frames_remaining = 0.0
 	jump_input_progress = -1.0
+	backstep_started = false
+	live_movement_active = false
+	last_live_movement_active = false
 
 func has_active_defense() -> bool:
 	return jump_active or (guard_active and selected_defense_type != "")
@@ -121,10 +127,20 @@ func request_jump_evade() -> void:
 			elapsed_startup_frames = int(floor(float(manager.enemy_effective_startup_frame) * progress()))
 		_start_jump_evade(elapsed_startup_frames)
 
+func request_backstep_evade() -> void:
+	if active and not resolving and not backstep_started and reaction_choice != "CHALLENGE":
+		reset_guard_state()
+		reaction_choice = "BACKSTEP"
+		backstep_started = true
+		if manager != null and manager.has_method("apply_reaction_backstep"):
+			manager.apply_reaction_backstep()
+		manager.log_message.emit("Backstep evade started.")
+
 func set_impact_resolution(text: String) -> void:
 	impact_resolution_text = text
 
 func _update_reaction_choice(elapsed_startup_frames: int, real_delta: float, current_intent: String) -> void:
+	_update_live_movement(real_delta)
 	if reaction_choice == "CHALLENGE":
 		return
 	if jump_started:
@@ -142,9 +158,11 @@ func _start_jump_evade(elapsed_startup_frames: int) -> void:
 	jump_input_progress = progress()
 	manager.log_message.emit("Jump evade started.")
 	manager.log_message.emit("Defense selected: jump evade at %d%%." % int(round(jump_input_progress * 100.0)))
+	if manager != null and manager.has_method("apply_reaction_jump_movement"):
+		manager.apply_reaction_jump_movement()
 
 func _update_jump_evade(real_delta: float, current_intent: String) -> void:
-	jump_startup_frames_remaining = maxf(0.0, jump_startup_frames_remaining - real_delta * 60.0)
+	jump_startup_frames_remaining = maxf(0.0, jump_startup_frames_remaining - real_delta * 60.0 * clampf(Engine.time_scale, 0.0, 1.0))
 	var startup_progress := 1.0 - (jump_startup_frames_remaining / float(maxi(1, jump_startup_frames)))
 	player.show_timeline_phase("jump", "STARTUP" if not jump_active else "ACTIVE", startup_progress, current_intent, false)
 	if not jump_active and jump_startup_frames_remaining <= 0.0:
@@ -191,6 +209,35 @@ func _current_live_guard_input() -> String:
 	if not Input.is_key_pressed(KEY_J):
 		return ""
 	return "crouch_block" if Input.is_key_pressed(KEY_S) else "block"
+
+func _update_live_movement(real_delta: float) -> void:
+	if reaction_choice in ["CHALLENGE", "JUMP EVADE", "BACKSTEP"] or _current_live_guard_input() != "" or _player_is_crouching():
+		live_movement_active = false
+		_log_live_movement_change()
+		return
+	var direction := 0.0
+	if Input.is_key_pressed(KEY_A):
+		direction -= 1.0
+	if Input.is_key_pressed(KEY_D):
+		direction += 1.0
+	live_movement_active = direction != 0.0
+	if live_movement_active and manager != null and manager.has_method("apply_reaction_live_movement"):
+		manager.apply_reaction_live_movement(direction, real_delta)
+	_log_live_movement_change()
+
+func _log_live_movement_change() -> void:
+	if live_movement_active == last_live_movement_active:
+		return
+	if live_movement_active:
+		manager.log_message.emit("Reaction movement started.")
+	else:
+		manager.log_message.emit("Reaction movement stopped.")
+	last_live_movement_active = live_movement_active
+
+func _player_is_crouching() -> bool:
+	if manager != null and manager.has_method("is_player_crouching"):
+		return manager.is_player_crouching()
+	return false
 
 func _defense_display_name(defense_type: String) -> String:
 	match defense_type:
