@@ -64,11 +64,15 @@ func _ready() -> void:
 func can_act() -> bool:
 	return state == State.IDLE and stance_state == StanceState.NORMAL
 
+func get_attacks() -> Dictionary:
+	return ATTACKS
+
 func start_attack(attack_id := "") -> void:
 	if not can_act():
 		return
 	state = State.TELEGRAPH
-	current_attack = attack_id if ATTACKS.has(attack_id) else _fallback_attack_id()
+	var attacks := get_attacks()
+	current_attack = attack_id if attacks.has(attack_id) else _fallback_attack_id()
 	telegraph_label.text = current_attack
 	telegraph_label.modulate = _attack_color(current_attack)
 	body.color = _attack_color(current_attack)
@@ -80,9 +84,13 @@ func resolve_attack() -> Dictionary:
 	state = State.ATTACK
 	body.color = Color.CRIMSON
 	attack_resolved.emit(current_attack)
-	var data := ATTACKS[current_attack] as Dictionary
+	var attacks := get_attacks()
+	if not attacks.has(current_attack):
+		return {}
+	var data := attacks[current_attack] as Dictionary
+	var hit_level := String(data.get("hit_level", data.get("type", current_attack)))
 	return {
-		"type": current_attack,
+		"type": String(data.get("type", hit_level)),
 		"id": data.get("id", current_attack),
 		"name": data.get("name", current_attack),
 		"damage": data["damage"],
@@ -95,12 +103,14 @@ func resolve_attack() -> Dictionary:
 		"range_min": data.get("range_min", 0.0),
 		"range_max": data.get("range_max", data["range"]),
 		"counter_damage": data["counter_damage"],
-		"hit_level": data.get("hit_level", current_attack),
+		"hit_level": hit_level,
 		"on_hit_adv": data.get("on_hit_adv", 0),
 		"on_block_adv": data.get("on_block_adv", 0),
 		"hitbox_width": data["hitbox_width"],
 		"hitbox_height": data["hitbox_height"],
+		"hitbox_offset_x": data.get("hitbox_offset_x", float(data["hitbox_width"]) * 0.5),
 		"hitbox_offset_y": data["hitbox_offset_y"],
+		"animation_key": data.get("animation_key", data.get("id", current_attack)),
 		"tags": data.get("tags", []),
 		"ai_use_case": data.get("ai_use_case", [])
 	}
@@ -337,7 +347,14 @@ func _update_stance_break_bar() -> void:
 	stance_break_bar.value = stance_recovery_frames_remaining
 
 func _fallback_attack_id() -> String:
-	return "MID"
+	var attacks := get_attacks()
+	if attacks.has("MID"):
+		return "MID"
+	if attacks.has("light_punch"):
+		return "light_punch"
+	for action_id in attacks.keys():
+		return String(action_id)
+	return ""
 
 func _flash_hit() -> void:
 	var tween := create_tween()

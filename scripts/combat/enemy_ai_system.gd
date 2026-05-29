@@ -95,8 +95,8 @@ func choose_intent(context: Dictionary) -> Dictionary:
 	var best_effective_startup := 0
 	var best_reason := ""
 	var best_spacing := ""
-	for action_id in enemy.ATTACKS.keys():
-		var action: Dictionary = enemy.ATTACKS[action_id]
+	for action_id in _enemy_attacks().keys():
+		var action: Dictionary = _enemy_attacks()[action_id]
 		if not _profile_allows_action(action):
 			continue
 		var evaluation := _score_action(action, context)
@@ -144,7 +144,7 @@ func evaluate_pressure_reaction(card: Resource, context: Dictionary) -> Dictiona
 	var perfect_roll := randf() < float(intent_profile.get("perfect_block_chance", 0.0))
 	var delay := _reaction_delay()
 	if (player_advantage <= 1 or repeated) and mash_score >= 10.0:
-		_set_state(DecisionState.MASHING, "Enemy sees a pressure gap/repeated move and considers mashing. Profile %s, delay %df." % [intent_profile.get("tier", "NORMAL"), delay], "HIGH", mash_score, int(enemy.ATTACKS["HIGH"]["startup_frame"]) + delay)
+		_set_state(DecisionState.MASHING, "Enemy sees a pressure gap/repeated move and considers mashing. Profile %s, delay %df." % [intent_profile.get("tier", "NORMAL"), delay], "HIGH", mash_score, _attack_startup("HIGH", 6) + delay)
 	elif card_level == "LOW":
 		_set_state(DecisionState.BLOCKING, "%sEnemy guards low against incoming pressure. Profile %s." % ["Perfect block read: " if perfect_roll else "", intent_profile.get("tier", "NORMAL")], "CROUCH_BLOCK", block_score, delay)
 	elif card_level == "OVERHEAD":
@@ -250,6 +250,18 @@ func _score_action(action: Dictionary, context: Dictionary) -> Dictionary:
 		"reason": "; ".join(reasons),
 		"spacing": spacing
 	}
+
+func _enemy_attacks() -> Dictionary:
+	if enemy != null and enemy.has_method("get_attacks"):
+		return enemy.get_attacks()
+	return {}
+
+func _attack_startup(action_id: String, fallback := 0) -> int:
+	var attacks := _enemy_attacks()
+	if attacks.has(action_id):
+		var action: Dictionary = attacks[action_id]
+		return int(action.get("startup_frame", action.get("startup", fallback)))
+	return fallback
 
 func _cannot_act_reason(context: Dictionary) -> String:
 	if bool(context.get("combat_over", false)):

@@ -546,6 +546,33 @@ func _enemy_ai_action_request(action_id: String):
 	request.input_frame = Engine.get_process_frames()
 	return request
 
+func _enemy_attacks() -> Dictionary:
+	if enemy != null and enemy.has_method("get_attacks"):
+		return enemy.get_attacks()
+	return Enemy.ATTACKS
+
+func _enemy_attack_data(action_id: String) -> Dictionary:
+	var attacks := _enemy_attacks()
+	if attacks.has(action_id):
+		return attacks[action_id] as Dictionary
+	return {}
+
+func _enemy_attack_hit_level(action_id: String) -> String:
+	var attack := _enemy_attack_data(action_id)
+	return String(attack.get("hit_level", attack.get("type", action_id))) if not attack.is_empty() else action_id
+
+func _enemy_attack_priority_ids() -> Array[String]:
+	var attacks := _enemy_attacks()
+	var ids: Array[String] = []
+	for action_id in ["MID", "light_punch", "light_kick", "HIGH", "heavy_kick", "OVERHEAD", "heavy_punch", "LOW"]:
+		if attacks.has(action_id) and not ids.has(action_id):
+			ids.append(action_id)
+	for action_id in attacks.keys():
+		var id := String(action_id)
+		if not ids.has(id):
+			ids.append(id)
+	return ids
+
 func play_card(index: int) -> void:
 	_repair_invalid_combat_state()
 	if _player_action_locked():
@@ -620,16 +647,24 @@ func _run_enemy_attack(start_reaction := true) -> void:
 	enemy.start_attack(String(ai_decision.get("action_id", "")))
 	current_enemy_intent = enemy.current_attack
 	current_enemy_action_request = _enemy_ai_action_request(current_enemy_intent)
-	enemy_base_startup_frame = int(Enemy.ATTACKS[current_enemy_intent]["startup_frame"])
+	var enemy_attack_data := _enemy_attack_data(current_enemy_intent)
+	if enemy_attack_data.is_empty():
+		log_message.emit("Enemy intent aborted: missing attack data for %s." % current_enemy_intent)
+		enemy.clear_intent()
+		attack_in_progress = false
+		waiting_for_defense = false
+		_enter_slow_neutral("Slow neutral movement started.")
+		return
+	enemy_base_startup_frame = int(enemy_attack_data["startup_frame"])
 	enemy_effective_startup_frame = int(ai_decision.get("effective_startup", frame_system.effective_startup(enemy_base_startup_frame, initiative_offset)))
 	if initiative_offset != 0:
 		log_message.emit("Enemy next startup modified by %s." % _signed_int(initiative_offset))
 	initiative_offset = 0
 	remaining_startup_frames = enemy_effective_startup_frame
-	combat_timeline.begin_from_enemy_attack(current_enemy_intent, Enemy.ATTACKS[current_enemy_intent], enemy_effective_startup_frame)
+	combat_timeline.begin_from_enemy_attack(current_enemy_intent, enemy_attack_data, enemy_effective_startup_frame)
 	_show_enemy_timeline_phase()
 	if start_reaction:
-		_start_reaction_window(current_enemy_intent, enemy_effective_startup_frame)
+		_start_reaction_window(_enemy_attack_hit_level(current_enemy_intent), enemy_effective_startup_frame)
 		_transition_combat_state(CombatStateMachineScript.State.REACTION_WINDOW, "reaction window started")
 	last_player_action_startup = 0
 	_clear_attack_hitboxes()
@@ -692,10 +727,11 @@ func _enemy_no_attack_fallback(approach_end_reason: String) -> Dictionary:
 	if fallback_attack != "" and defensive_reaction_retry_count >= max_defensive_reaction_retries:
 		defensive_reaction_fallback = "force_basic_poke:%s" % fallback_attack
 		log_message.emit("Enemy defensive retries exhausted; forcing %s." % fallback_attack)
-		var startup: int = frame_system.effective_startup(int(Enemy.ATTACKS[fallback_attack]["startup_frame"]), initiative_offset)
+		var fallback_data := _enemy_attack_data(fallback_attack)
+		var startup: int = frame_system.effective_startup(int(fallback_data["startup_frame"]), initiative_offset)
 		return {
 			"action_id": fallback_attack,
-			"action": Enemy.ATTACKS[fallback_attack],
+			"action": fallback_data,
 			"score": 1.0,
 			"effective_startup": startup,
 			"state": "PRESSURING",
@@ -712,10 +748,10 @@ func _enemy_no_attack_fallback(approach_end_reason: String) -> Dictionary:
 
 func _fallback_reachable_enemy_attack_id() -> String:
 	var distance := _distance_between_fighters()
-	for action_id in ["MID", "HIGH", "LOW", "OVERHEAD"]:
-		if not Enemy.ATTACKS.has(action_id):
+	for action_id in _enemy_attack_priority_ids():
+		var action: Dictionary = _enemy_attack_data(action_id)
+		if action.is_empty():
 			continue
-		var action: Dictionary = Enemy.ATTACKS[action_id]
 		var range_min := float(action.get("range_min", 0.0))
 		var range_max := float(action.get("range_max", action.get("range", 0.0)))
 		if distance >= range_min and distance <= range_max:
@@ -1022,8 +1058,8 @@ func _closest_enemy_attack_max_range() -> float:
 	var max_range := 0.0
 	if enemy == null:
 		return max_range
-	for action_id in Enemy.ATTACKS.keys():
-		var action: Dictionary = Enemy.ATTACKS[action_id]
+	for action_id in _enemy_attacks().keys():
+		var action: Dictionary = _enemy_attacks()[action_id]
 		max_range = maxf(max_range, float(action.get("range_max", action.get("range", 0.0))))
 	return max_range
 
@@ -1043,7 +1079,7 @@ func _start_reaction_window(intent: String, startup_frames: int) -> void:
 func _tick_reaction_window(delta: float) -> void:
 	if not _can_tick_reaction_window() or reaction_window_system.resolving:
 		return
-	var result: Dictionary = reaction_window_system.tick(delta, combat_state_machine.can_tick_reaction_window(), enemy_effective_startup_frame, current_enemy_intent)
+	var result: Dictionary = reaction_window_system.tick(delta, combat_state_machine.can_tick_reaction_window(), enemy_effective_startup_frame, _enemy_attack_hit_level(current_enemy_intent))
 	var progress := _reaction_progress()
 	remaining_startup_frames = int(result.get("remaining_startup_frames", remaining_startup_frames))
 	if combat_timeline != null:
@@ -1126,8 +1162,7 @@ func _resolve_enemy_impact_after_countdown(defense_type: String) -> void:
 		_finish_enemy_resolution()
 		return
 
-	_set_enemy_attack_hitbox(_make_enemy_attack_hitbox(result))
-	var enemy_attack_hits := last_enemy_attack_hitbox.intersects(get_player_hurtbox())
+	var enemy_attack_hits := _activate_enemy_attack_hitbox(result)
 	if defense_type == "wait":
 		if not enemy_attack_hits:
 			log_message.emit("Enemy whiffed after wait.")
@@ -1159,8 +1194,7 @@ func _resolve_block_after_startup(defense_type: String, startup_after_block: int
 		_finish_enemy_resolution()
 		return
 
-	_set_enemy_attack_hitbox(_make_enemy_attack_hitbox(result))
-	var enemy_attack_hits := last_enemy_attack_hitbox.intersects(get_player_hurtbox())
+	var enemy_attack_hits := _activate_enemy_attack_hitbox(result)
 	if not enemy_attack_hits or _enemy_attack_whiffs_against_defense(defense_type, result):
 		log_message.emit("Enemy attack whiffed due to spacing.")
 		_reset_pressure_sequence()
@@ -1201,8 +1235,7 @@ func _resolve_reaction_no_defense() -> void:
 		_finish_enemy_resolution()
 		return
 
-	_set_enemy_attack_hitbox(_make_enemy_attack_hitbox(result))
-	var enemy_attack_hits := last_enemy_attack_hitbox.intersects(get_player_hurtbox())
+	var enemy_attack_hits := _activate_enemy_attack_hitbox(result)
 	if not enemy_attack_hits:
 		log_message.emit("Enemy attack whiffed due to spacing.")
 		log_message.emit("Impact resolved: whiff.")
@@ -1223,8 +1256,7 @@ func _resolve_reaction_block(defense_type: String, input_progress: float) -> voi
 		_finish_enemy_resolution()
 		return
 
-	_set_enemy_attack_hitbox(_make_enemy_attack_hitbox(result))
-	var enemy_attack_hits := last_enemy_attack_hitbox.intersects(get_player_hurtbox())
+	var enemy_attack_hits := _activate_enemy_attack_hitbox(result)
 	if not enemy_attack_hits or _enemy_attack_whiffs_against_defense(defense_type, result):
 		if String(result["type"]) == "LOW" and _is_jump_action(defense_type):
 			log_message.emit("LOW sweep whiffed due to jump.")
@@ -1402,17 +1434,28 @@ func _try_interrupt_with_card(index: int) -> void:
 	log_message.emit("Enemy impact remaining: %d." % remaining_startup_frames)
 	_start_player_card_action(card)
 	_begin_player_card_timeline(card)
-	var card_hits := _card_would_hit_enemy_after_movement(card)
 	var enemy_startup_after_card := remaining_startup_frames - int(card.startup_frame)
 	_advance_player_action_frames(int(card.startup_frame), false, false)
 
-	if card_hits and absi(int(card.startup_frame) - remaining_startup_frames) <= 2:
-		log_message.emit("Challenge trades.")
+	if absi(int(card.startup_frame) - remaining_startup_frames) <= 2:
 		_move_player_by_card(card)
 		_clamp_duel_distance()
 		await _wait_for_player_hit_confirm(card)
-		_set_player_attack_hitbox(_make_card_hitbox(card))
-		_resolve_intent_trade(index, card, enemy_startup_after_card)
+		if _activate_player_card_hitbox(card):
+			log_message.emit("Challenge trades.")
+			_resolve_intent_trade(index, card, enemy_startup_after_card)
+		else:
+			_complete_player_card_timeline(card)
+			log_message.emit("Interrupt failed: out of range.")
+			log_message.emit("Card whiffed: no active hitbox overlap.")
+			log_message.emit("No follow-up draw: card did not connect.")
+			remaining_startup_frames = enemy_startup_after_card
+			deck_manager.discard_card_unrestricted(index)
+			if remaining_startup_frames <= 0:
+				await _resolve_enemy_impact_after_countdown("card_whiff")
+			else:
+				frame_advantage_changed.emit(frame_advantage)
+				_update_time_scale()
 		return
 
 	if int(card.startup_frame) > remaining_startup_frames:
@@ -1423,15 +1466,15 @@ func _try_interrupt_with_card(index: int) -> void:
 		_cancel_player_action_lifecycle("challenge_too_slow", false)
 		_resolve_enemy_counter_hit(true)
 		return
-	if not card_hits:
+	if not _card_would_hit_enemy_after_movement(card):
 		log_message.emit("Challenge loses.")
 		_move_player_by_card(card)
 		_clamp_duel_distance()
 		await _wait_for_player_hit_confirm(card)
-		_set_player_attack_hitbox(_make_card_hitbox(card))
+		_activate_player_card_hitbox(card)
 		_complete_player_card_timeline(card)
 		log_message.emit("Interrupt failed: out of range.")
-		log_message.emit("Card whiffed: hitbox missed.")
+		log_message.emit("Card whiffed: no active hitbox overlap.")
 		log_message.emit("No follow-up draw: card did not connect.")
 		remaining_startup_frames = enemy_startup_after_card
 		deck_manager.discard_card_unrestricted(index)
@@ -1448,7 +1491,19 @@ func _try_interrupt_with_card(index: int) -> void:
 	_move_player_by_card(card)
 	_clamp_duel_distance()
 	await _wait_for_player_hit_confirm(card)
-	_set_player_attack_hitbox(_make_card_hitbox(card))
+	if not _activate_player_card_hitbox(card):
+		_complete_player_card_timeline(card)
+		log_message.emit("Interrupt failed: out of range.")
+		log_message.emit("Card whiffed: no active hitbox overlap.")
+		log_message.emit("No follow-up draw: card did not connect.")
+		remaining_startup_frames = enemy_startup_after_card
+		deck_manager.discard_card_unrestricted(index)
+		if remaining_startup_frames <= 0:
+			await _resolve_enemy_impact_after_countdown("card_whiff")
+		else:
+			frame_advantage_changed.emit(frame_advantage)
+			_update_time_scale()
+		return
 	Engine.time_scale = 1.0
 	frame_advantage_changed.emit(frame_advantage)
 	player.set_free_movement_enabled(false)
@@ -1477,17 +1532,28 @@ func _try_interrupt_with_card_snapshot(snapshot: Dictionary) -> void:
 	log_message.emit("Enemy impact remaining: %d." % remaining_startup_frames)
 	_start_player_card_action(card)
 	_begin_player_card_timeline(card)
-	var card_hits := _card_would_hit_enemy_after_movement(card)
 	var enemy_startup_after_card := remaining_startup_frames - int(card.startup_frame)
 	_advance_player_action_frames(int(card.startup_frame), false, false)
 
-	if card_hits and absi(int(card.startup_frame) - remaining_startup_frames) <= 2:
-		log_message.emit("Challenge trades.")
+	if absi(int(card.startup_frame) - remaining_startup_frames) <= 2:
 		_move_player_by_card(card)
 		_clamp_duel_distance()
 		await _wait_for_player_hit_confirm(card)
-		_set_player_attack_hitbox(_make_card_hitbox(card))
-		_resolve_intent_trade_snapshot(snapshot, card, enemy_startup_after_card)
+		if _activate_player_card_hitbox(card):
+			log_message.emit("Challenge trades.")
+			_resolve_intent_trade_snapshot(snapshot, card, enemy_startup_after_card)
+		else:
+			_complete_player_card_timeline(card)
+			log_message.emit("Interrupt failed: out of range.")
+			log_message.emit("Card whiffed: no active hitbox overlap.")
+			log_message.emit("No follow-up draw: card did not connect.")
+			remaining_startup_frames = enemy_startup_after_card
+			deck_manager.discard_queued_card_snapshot(snapshot)
+			if remaining_startup_frames <= 0:
+				await _resolve_enemy_impact_after_countdown("card_whiff")
+			else:
+				frame_advantage_changed.emit(frame_advantage)
+				_update_time_scale()
 		return
 
 	if int(card.startup_frame) > remaining_startup_frames:
@@ -1498,15 +1564,15 @@ func _try_interrupt_with_card_snapshot(snapshot: Dictionary) -> void:
 		_cancel_player_action_lifecycle("challenge_too_slow", false)
 		_resolve_enemy_counter_hit(true)
 		return
-	if not card_hits:
+	if not _card_would_hit_enemy_after_movement(card):
 		log_message.emit("Challenge loses.")
 		_move_player_by_card(card)
 		_clamp_duel_distance()
 		await _wait_for_player_hit_confirm(card)
-		_set_player_attack_hitbox(_make_card_hitbox(card))
+		_activate_player_card_hitbox(card)
 		_complete_player_card_timeline(card)
 		log_message.emit("Interrupt failed: out of range.")
-		log_message.emit("Card whiffed: hitbox missed.")
+		log_message.emit("Card whiffed: no active hitbox overlap.")
 		log_message.emit("No follow-up draw: card did not connect.")
 		remaining_startup_frames = enemy_startup_after_card
 		deck_manager.discard_queued_card_snapshot(snapshot)
@@ -1523,7 +1589,19 @@ func _try_interrupt_with_card_snapshot(snapshot: Dictionary) -> void:
 	_move_player_by_card(card)
 	_clamp_duel_distance()
 	await _wait_for_player_hit_confirm(card)
-	_set_player_attack_hitbox(_make_card_hitbox(card))
+	if not _activate_player_card_hitbox(card):
+		_complete_player_card_timeline(card)
+		log_message.emit("Interrupt failed: out of range.")
+		log_message.emit("Card whiffed: no active hitbox overlap.")
+		log_message.emit("No follow-up draw: card did not connect.")
+		remaining_startup_frames = enemy_startup_after_card
+		deck_manager.discard_queued_card_snapshot(snapshot)
+		if remaining_startup_frames <= 0:
+			await _resolve_enemy_impact_after_countdown("card_whiff")
+		else:
+			frame_advantage_changed.emit(frame_advantage)
+			_update_time_scale()
+		return
 	Engine.time_scale = 1.0
 	frame_advantage_changed.emit(frame_advantage)
 	player.set_free_movement_enabled(false)
@@ -1548,10 +1626,13 @@ func _resolve_intent_trade(index: int, preview_card: Resource, enemy_startup_aft
 	attack_in_progress = false
 	remaining_startup_frames = maxi(0, enemy_startup_after_card)
 	Engine.time_scale = 1.0
-	_set_enemy_attack_hitbox(_make_enemy_attack_hitbox(result))
+	var enemy_attack_hits := _activate_enemy_attack_hitbox(result)
 	_apply_hit_stance_damage(preview_card, "trade")
 	_complete_player_card_timeline(preview_card)
-	player.take_damage(result["damage"])
+	if enemy_attack_hits:
+		player.take_damage(result["damage"])
+	else:
+		log_message.emit("Enemy trade hitbox had no overlap.")
 	player.set_free_movement_enabled(false)
 	var traded_intent := current_enemy_intent
 	current_enemy_intent = ""
@@ -1577,10 +1658,13 @@ func _resolve_intent_trade_snapshot(snapshot: Dictionary, preview_card: Resource
 	attack_in_progress = false
 	remaining_startup_frames = maxi(0, enemy_startup_after_card)
 	Engine.time_scale = 1.0
-	_set_enemy_attack_hitbox(_make_enemy_attack_hitbox(result))
+	var enemy_attack_hits := _activate_enemy_attack_hitbox(result)
 	_apply_hit_stance_damage(preview_card, "trade_snapshot")
 	_complete_player_card_timeline(preview_card)
-	player.take_damage(result["damage"])
+	if enemy_attack_hits:
+		player.take_damage(result["damage"])
+	else:
+		log_message.emit("Enemy trade hitbox had no overlap.")
 	player.set_free_movement_enabled(false)
 	var traded_intent := current_enemy_intent
 	current_enemy_intent = ""
@@ -1609,8 +1693,7 @@ func _resolve_enemy_counter_hit(counter_hit := true) -> void:
 		_enter_slow_neutral("Slow neutral movement started.")
 		return
 	var damage := int(result["counter_damage"])
-	_set_enemy_attack_hitbox(_make_enemy_attack_hitbox(result))
-	if not last_enemy_attack_hitbox.intersects(get_player_hurtbox()):
+	if not _activate_enemy_attack_hitbox(result):
 		log_message.emit("Enemy attack whiffed due to spacing.")
 		_change_frame_advantage(1)
 	else:
@@ -1674,9 +1757,8 @@ func _resolve_pressure_card(index: int, route_valid: bool, starts_new_route: boo
 	var repeat_info := _repeated_card_decay(preview_card)
 	_log_enemy_pressure_reaction(preview_card, repeat_info)
 	var frame_delta: int = int(preview_card.frame_gain) - int(preview_card.frame_cost) + int(repeat_info["penalty"])
-	_set_player_attack_hitbox(_make_card_hitbox(preview_card))
-	if _card_needs_hitbox(preview_card) and not _card_hitbox_hits_enemy(preview_card):
-		log_message.emit("Card whiffed: hitbox missed.")
+	if not _activate_player_card_hitbox(preview_card):
+		log_message.emit("Card whiffed: no active hitbox overlap.")
 		log_message.emit("No follow-up draw: card did not connect.")
 		_record_card_action_event(preview_card, "whiff", "pressure_card")
 		_complete_player_card_timeline(preview_card)
@@ -1724,9 +1806,8 @@ func _resolve_pressure_card_snapshot(snapshot: Dictionary) -> void:
 	var repeat_info := _repeated_card_decay(preview_card)
 	_log_enemy_pressure_reaction(preview_card, repeat_info)
 	var frame_delta: int = int(preview_card.frame_gain) - int(preview_card.frame_cost) + int(repeat_info["penalty"])
-	_set_player_attack_hitbox(_make_card_hitbox(preview_card))
-	if _card_needs_hitbox(preview_card) and not _card_hitbox_hits_enemy(preview_card):
-		log_message.emit("Card whiffed: hitbox missed.")
+	if not _activate_player_card_hitbox(preview_card):
+		log_message.emit("Card whiffed: no active hitbox overlap.")
 		log_message.emit("No follow-up draw: card did not connect.")
 		_record_card_action_event(preview_card, "whiff", "pressure_card_snapshot")
 		_complete_player_card_timeline(preview_card)
@@ -1772,9 +1853,8 @@ func _resolve_player_card(card: Resource, bonus_frame_advantage := 0, apply_move
 	var repeat_info := _repeated_card_decay(card)
 	_log_enemy_pressure_reaction(card, repeat_info)
 	var frame_delta: int = int(card.frame_gain) - int(card.frame_cost) + bonus_frame_advantage + int(repeat_info["penalty"])
-	_set_player_attack_hitbox(_make_card_hitbox(card))
-	if _card_needs_hitbox(card) and not _card_hitbox_hits_enemy(card):
-		log_message.emit("Card whiffed: hitbox missed.")
+	if not _activate_player_card_hitbox(card):
+		log_message.emit("Card whiffed: no active hitbox overlap.")
 		log_message.emit("No follow-up draw: card did not connect.")
 		_record_card_action_event(card, "whiff", "player_card")
 		_complete_player_card_timeline(card)
@@ -1903,6 +1983,12 @@ func get_player_hurtbox() -> Rect2:
 func get_enemy_hurtbox() -> Rect2:
 	return hitbox_system.enemy_hurtbox()
 
+func get_player_pushbox() -> Rect2:
+	return hitbox_system.player_pushbox()
+
+func get_enemy_pushbox() -> Rect2:
+	return hitbox_system.enemy_pushbox()
+
 func _make_card_hitbox(card: Resource) -> Rect2:
 	return hitbox_system.card_hitbox(card)
 
@@ -1921,8 +2007,32 @@ func _card_needs_hitbox(card: Resource) -> bool:
 func _card_hitbox_hits_enemy(card: Resource) -> bool:
 	return hitbox_system.card_hitbox_hits_enemy(card)
 
+func _player_attack_overlaps_enemy() -> bool:
+	return hitbox_system.player_attack_overlaps_enemy()
+
+func _enemy_attack_overlaps_player() -> bool:
+	return hitbox_system.enemy_attack_overlaps_player()
+
 func _card_would_hit_enemy_after_movement(card: Resource) -> bool:
 	return hitbox_system.card_would_hit_enemy_after_movement(card)
+
+func _activate_player_card_hitbox(card: Resource) -> bool:
+	_set_player_attack_hitbox(_make_card_hitbox(card))
+	var overlaps := not _card_needs_hitbox(card) or _player_attack_overlaps_enemy()
+	if overlaps:
+		log_message.emit("%s active hitbox overlapped enemy hurtbox." % card.display_name)
+	else:
+		log_message.emit("%s active hitbox had no overlap." % card.display_name)
+	return overlaps
+
+func _activate_enemy_attack_hitbox(attack_data: Dictionary) -> bool:
+	_set_enemy_attack_hitbox(_make_enemy_attack_hitbox(attack_data))
+	var overlaps := _enemy_attack_overlaps_player()
+	if overlaps:
+		log_message.emit("%s active hitbox overlapped player hurtbox." % String(attack_data.get("name", attack_data.get("id", "Enemy attack"))))
+	else:
+		log_message.emit("%s active hitbox had no overlap." % String(attack_data.get("name", attack_data.get("id", "Enemy attack"))))
+	return overlaps
 
 func _set_player_attack_hitbox(hitbox: Rect2) -> void:
 	if hitbox.size != Vector2.ZERO and combat_timeline.actor == "PLAYER":
