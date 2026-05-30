@@ -19,6 +19,12 @@ script = ExtResource("1_renka")
 position = Vector2(0, -49)
 shape = SubResource("RectangleShape2D_player")
 
+[node name="Pushbox" type="Area2D" parent="."]
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Pushbox"]
+position = Vector2(0, -49)
+shape = SubResource("RectangleShape2D_player")
+
 [node name="AnimatedSprite2D" type="AnimatedSprite2D" parent="."]
 position = Vector2(0, 0)
 
@@ -43,9 +49,11 @@ position = Vector2(0, -49)
 shape = SubResource("RectangleShape2D_hurtbox")
 
 [node name="AttackHitbox" type="Area2D" parent="."]
+visible = false
 position = Vector2(58, -74)
 
 [node name="CollisionShape2D" type="CollisionShape2D" parent="AttackHitbox"]
+disabled = true
 shape = SubResource("RectangleShape2D_attack")
 
 [node name="StateLabel" type="Label" parent="."]

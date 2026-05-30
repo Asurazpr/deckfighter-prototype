@@ -52,6 +52,12 @@ func begin_from_card(card: Resource) -> void:
 		"animation_key": String(card.id)
 	})
 
+func begin_from_move(actor_id: String, move_def: MoveDefinition) -> void:
+	if move_def == null:
+		finish_action()
+		return
+	begin_action(actor_id, move_def.display_name, move_def.timeline_data())
+
 func begin_from_enemy_attack(attack_id: String, attack_data: Dictionary, effective_startup := -1) -> void:
 	var startup := int(attack_data.get("startup_frame", attack_data.get("startup", 0)))
 	if effective_startup >= 0:
@@ -63,7 +69,7 @@ func begin_from_enemy_attack(attack_id: String, attack_data: Dictionary, effecti
 		"impact_frame": startup,
 		"hitbox_on_frame": startup,
 		"hitbox_off_frame": startup + int(attack_data.get("active", 3)),
-		"animation_key": attack_id
+		"animation_key": String(attack_data.get("animation_key", attack_id))
 	})
 
 func begin_movement(actor_id: String, display_name: String, cost_frames: int) -> void:

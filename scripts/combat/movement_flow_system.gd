@@ -83,6 +83,7 @@ func exit() -> void:
 		last_enemy_approach_active = false
 		_reset_player_step()
 		_reset_enemy_step()
+		_clear_player_locomotion_visual()
 	player.set_free_movement_enabled(false)
 
 func tick(delta: float) -> Dictionary:
@@ -92,7 +93,7 @@ func tick(delta: float) -> Dictionary:
 	_advance_combat_time(delta)
 	approach_target_distance = _current_approach_target_distance()
 	var previous_distance := movement_system.distance_between_fighters()
-	player_live_movement_active = Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_D)
+	player_live_movement_active = _input_direction() != 0.0
 	_tick_player_step(delta)
 	_tick_enemy_approach_step(delta)
 	movement_system.clamp_duel_distance()
@@ -214,6 +215,8 @@ func _tick_enemy_approach_step(real_delta: float) -> void:
 		enemy_movement_frames_remaining = BASIC_STEP_TRAVEL_FRAMES
 
 func _input_direction() -> float:
+	if player != null and player.has_method("is_crouching") and player.is_crouching():
+		return 0.0
 	var direction := 0.0
 	if Input.is_key_pressed(KEY_A):
 		direction -= 1.0
@@ -234,9 +237,15 @@ func _show_player_step_pose() -> void:
 		phase_name = "RECOVERY"
 		phase_total = BASIC_STEP_RECOVERY_FRAMES
 	var progress := 1.0 - movement_frames_remaining / maxf(1.0, phase_total)
-	_show_actor_pose(player, movement_pose, phase_name, progress)
+	if player != null and player.has_method("show_live_locomotion"):
+		player.show_live_locomotion(movement_direction, movement_pose == "step_forward", phase_name, progress)
+	else:
+		_show_actor_pose(player, movement_pose, phase_name, progress)
 
 func _show_player_idle_pose() -> void:
+	if player != null and player.has_method("clear_live_locomotion_visual"):
+		player.clear_live_locomotion_visual()
+		return
 	if player != null and player.has_method("clear_timeline_visual"):
 		player.clear_timeline_visual()
 
@@ -254,6 +263,10 @@ func _reset_player_step() -> void:
 func _reset_enemy_step() -> void:
 	enemy_movement_phase = STEP_PHASE_IDLE
 	enemy_movement_frames_remaining = 0.0
+
+func _clear_player_locomotion_visual() -> void:
+	if player != null and player.has_method("clear_live_locomotion_visual"):
+		player.clear_live_locomotion_visual()
 
 func _advance_combat_time(delta: float) -> void:
 	_frame_accumulator += delta * 60.0

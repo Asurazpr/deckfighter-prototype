@@ -6,6 +6,7 @@ extends Node2D
 @export var active_hitbox_color := Color(1.0, 0.85, 0.18, 0.28)
 @export var show_anchor_debug := false
 @export var show_joint_debug := true
+@export var show_socket_hitbox_debug := false
 
 const PROPORTION_SCALE := 0.72
 const HEAD_RADIUS := 18.0
@@ -94,7 +95,7 @@ func _draw() -> void:
 		draw_circle(points["hand_socket"] + offset, _rig_units(HAND_RADIUS), Color.WHITE)
 		draw_circle(points["foot_socket"] + offset, _rig_units(JOINT_RADIUS) * 0.85, Color.WHITE)
 
-	if hitbox_active:
+	if hitbox_active and show_socket_hitbox_debug:
 		var hitbox_rect := _socket_hitbox_rect(points)
 		draw_rect(hitbox_rect, active_hitbox_color, true)
 		draw_rect(hitbox_rect, active_hitbox_color.lightened(0.45), false, 2.0)

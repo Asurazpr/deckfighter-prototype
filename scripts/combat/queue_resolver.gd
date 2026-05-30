@@ -80,6 +80,8 @@ func card_snapshot(index: int, allow_break_launcher: bool) -> Dictionary:
 		"hitbox_height": card.hitbox_height,
 		"hitbox_offset_x": card.hitbox_offset_x,
 		"hitbox_offset_y": card.hitbox_offset_y,
+		"attack_level": card.attack_level,
+		"knockback": card.knockback,
 		"tags": card.tags.duplicate(),
 		"allowed_follow_up_card_ids": card.allowed_follow_up_card_ids.duplicate(),
 		"route_valid_at_queue": route_valid,
@@ -87,10 +89,11 @@ func card_snapshot(index: int, allow_break_launcher: bool) -> Dictionary:
 	}
 
 func snapshot_debug_text(snapshot: Dictionary) -> String:
-	return "%s(%s #%d) start %df dmg %d st %d hit +%d whiff %d route %s tags %s" % [
+	return "%s(%s #%d) %s start %df dmg %d st %d hit +%d whiff %d route %s tags %s" % [
 		snapshot.get("display_name", "Card"),
 		snapshot.get("id", ""),
 		int(snapshot.get("card_instance_id", snapshot.get("instance_id", 0))),
+		String(snapshot.get("attack_level", "MID")),
 		int(snapshot.get("startup_frame", 0)),
 		int(snapshot.get("damage", 0)),
 		int(snapshot.get("stance_damage", 0)),

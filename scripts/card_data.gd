@@ -24,6 +24,8 @@ enum Target { ENEMY, SELF }
 @export var hitbox_height := 0.0
 @export var hitbox_offset_x := 0.0
 @export var hitbox_offset_y := 0.0
+@export var attack_level := "MID"
+@export var knockback := 0.0
 @export var target := Target.ENEMY
 @export var allowed_follow_up_card_ids: Array[String] = []
 
@@ -48,7 +50,9 @@ static func make(
 	_allowed_follow_up_card_ids: Array[String] = [],
 	_hit_frame := -1,
 	_active_start_frame := -1,
-	_active_end_frame := -1
+	_active_end_frame := -1,
+	_attack_level := "MID",
+	_knockback := 0.0
 ) -> Resource:
 	var card := new()
 	card.id = _id
@@ -70,6 +74,8 @@ static func make(
 	card.hitbox_height = _hitbox_height
 	card.hitbox_offset_x = _hitbox_offset_x
 	card.hitbox_offset_y = _hitbox_offset_y
+	card.attack_level = _attack_level
+	card.knockback = _knockback
 	card.tags = _tags.duplicate()
 	card.allowed_follow_up_card_ids = _allowed_follow_up_card_ids.duplicate()
 	return card

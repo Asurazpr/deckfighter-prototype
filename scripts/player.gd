@@ -12,34 +12,42 @@ const GRAVITY := 1300.0
 @export var max_hp := 100
 @export var hurtbox_width := 50.0
 @export var hurtbox_height := 90.0
+@export var crouch_hurtbox_width := 50.0
+@export var crouch_hurtbox_height := 40.0
 
 var hp := max_hp
 var input_enabled := true
 var free_movement_enabled := true
+var crouching := false
 var current_animation_action := "None"
 var current_animation_phase := "DONE"
 var current_animation_progress := 0.0
 var current_animation_hit_level := ""
 var current_animation_hitbox_active := false
 var _card_visual_tween: Tween
+var _base_hurtbox_shape_size := Vector2.ZERO
+var _base_hurtbox_shape_position := Vector2.ZERO
 
 @onready var body: ColorRect = $Body
 @onready var state_label: Label = $StateLabel
 @onready var rig: Node = $Rig
+@onready var hurtbox_shape: CollisionShape2D = get_node_or_null("Hurtbox/CollisionShape2D") as CollisionShape2D
 
 func _ready() -> void:
 	hp = max_hp
 	hp_changed.emit(hp, max_hp)
+	_cache_hurtbox_shape()
 	_set_state("READY")
 
 func _physics_process(delta: float) -> void:
+	_update_neutral_crouch()
 	if not is_on_floor():
 		velocity.y += GRAVITY * delta
 
 	var direction := 0.0
 	if input_enabled and free_movement_enabled:
-		direction = Input.get_axis("move_left", "move_right")
-		if Input.is_action_just_pressed("jump") and is_on_floor():
+		direction = 0.0 if crouching else Input.get_axis("move_left", "move_right")
+		if not crouching and Input.is_action_just_pressed("jump") and is_on_floor():
 			velocity.y = JUMP_VELOCITY
 			defense_performed.emit("jump")
 			_flash(Color.SKY_BLUE, "JUMP")
@@ -47,7 +55,7 @@ func _physics_process(delta: float) -> void:
 			var defense_type := "crouch_block" if Input.is_key_pressed(KEY_S) else "block"
 			defense_performed.emit(defense_type)
 			_flash(Color.CORNFLOWER_BLUE if defense_type == "crouch_block" else Color.DODGER_BLUE, "LOW BLOCK" if defense_type == "crouch_block" else "BLOCK")
-		if Input.is_action_just_pressed("backstep"):
+		if not crouching and Input.is_action_just_pressed("backstep"):
 			velocity.x = -SPEED * 2.2
 			defense_performed.emit("backstep")
 			_flash(Color.LIGHT_BLUE, "BACKSTEP")
@@ -150,7 +158,8 @@ func get_animation_debug() -> Dictionary:
 		"movement_direction": "unknown",
 		"rig_scale": rig.scale if rig != null else Vector2.ONE,
 		"facing": "right" if rig == null or float(rig.facing) >= 0.0 else "left",
-		"hit_level": current_animation_hit_level
+		"hit_level": current_animation_hit_level,
+		"crouching": crouching
 	}
 
 func set_input_enabled(enabled: bool) -> void:
@@ -160,6 +169,46 @@ func set_free_movement_enabled(enabled: bool) -> void:
 	free_movement_enabled = enabled
 	if not enabled:
 		velocity.x = 0.0
+
+func is_crouching() -> bool:
+	return crouching
+
+func can_enter_neutral_crouch() -> bool:
+	return input_enabled
+
+func _update_neutral_crouch() -> void:
+	var wants_crouch := _crouch_input_pressed() and can_enter_neutral_crouch()
+	if wants_crouch == crouching:
+		return
+	crouching = wants_crouch
+	_apply_crouch_hurtbox(crouching)
+	velocity.x = 0.0 if crouching else velocity.x
+	_set_state("CROUCH" if crouching else "READY")
+
+func _crouch_input_pressed() -> bool:
+	return Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN) or Input.is_action_pressed("ui_down")
+
+func _cache_hurtbox_shape() -> void:
+	if hurtbox_shape == null:
+		return
+	var rect_shape := hurtbox_shape.shape as RectangleShape2D
+	if rect_shape == null:
+		return
+	_base_hurtbox_shape_size = rect_shape.size
+	_base_hurtbox_shape_position = hurtbox_shape.position
+
+func _apply_crouch_hurtbox(enabled: bool) -> void:
+	if hurtbox_shape == null:
+		return
+	var rect_shape := hurtbox_shape.shape as RectangleShape2D
+	if rect_shape == null:
+		return
+	if enabled:
+		rect_shape.size = Vector2(crouch_hurtbox_width, crouch_hurtbox_height)
+		hurtbox_shape.position = Vector2(_base_hurtbox_shape_position.x, -crouch_hurtbox_height * 0.5)
+	else:
+		rect_shape.size = _base_hurtbox_shape_size
+		hurtbox_shape.position = _base_hurtbox_shape_position
 
 func _flash(color: Color, label: String) -> void:
 	body.color = color

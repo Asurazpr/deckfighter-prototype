@@ -195,11 +195,11 @@ func _draw_card() -> Resource:
 
 func _build_starter_deck() -> void:
 	card_library = {
-		"light_punch": CardDataScript.make("light_punch", "Light Punch", "LP", "Fast Renka melee starter.", 6, 8, 1, 1, 5, 70.0, 0.0, -2, 75.0, 45.0, 55.0, -35.0, ["starter", "interrupt"], ["heavy_punch", "uppercut", "light_kick"], 5, 5, 8),
-		"heavy_punch": CardDataScript.make("heavy_punch", "Heavy Punch", "HP", "Committed Renka punch with strong damage.", 16, 12, 6, 0, 12, 85.0, 0.0, -5, 100.0, 60.0, 70.0, -35.0, ["attack"], ["uppercut"], 12, 12, 16),
-		"uppercut": CardDataScript.make("uppercut", "Uppercut", "Up", "Vertical launcher-style strike.", 9, 12, 1, 2, 10, 70.0, 0.0, -4, 75.0, 80.0, 55.0, -55.0, ["launcher", "interrupt"], ["heavy_kick"], 10, 10, 14),
-		"light_kick": CardDataScript.make("light_kick", "Light Kick", "LK", "Fast low-line kick for melee pressure.", 8, 8, 1, 1, 8, 82.0, 0.0, -3, 90.0, 44.0, 62.0, -22.0, ["attack", "interrupt"], ["heavy_kick", "light_punch"], 8, 8, 11),
-		"heavy_kick": CardDataScript.make("heavy_kick", "Heavy Kick", "HK", "Committed Renka kick finisher.", 18, 14, 6, 0, 13, 92.0, 0.0, -5, 112.0, 56.0, 72.0, -26.0, ["attack", "finisher"], [], 13, 13, 18)
+		"light_punch": CardDataScript.make("light_punch", "Light Punch", "LP", "Fast Renka melee starter.", 6, 8, 1, 1, 5, 70.0, 0.0, -2, 36.0, 22.0, 31.0, -72.0, ["starter", "interrupt"], ["heavy_punch", "uppercut", "light_kick"], 5, 5, 8, "MID"),
+		"heavy_punch": CardDataScript.make("heavy_punch", "Heavy Punch", "HP", "Committed Renka punch with strong damage.", 16, 12, 6, 0, 12, 85.0, 0.0, -5, 48.0, 32.0, 38.0, -78.0, ["attack"], ["uppercut"], 12, 12, 16, "MID"),
+		"uppercut": CardDataScript.make("uppercut", "Uppercut", "Up", "Vertical launcher-style strike.", 9, 12, 1, 2, 10, 70.0, 0.0, -4, 38.0, 68.0, 24.0, -88.0, ["launcher", "interrupt"], ["heavy_kick"], 10, 10, 14, "MID"),
+		"light_kick": CardDataScript.make("light_kick", "Light Kick", "LK", "Fast low-line kick for melee pressure.", 8, 8, 1, 1, 8, 82.0, 0.0, -3, 48.0, 24.0, 39.0, -38.0, ["attack", "interrupt"], ["heavy_kick", "light_punch"], 8, 8, 11, "LOW"),
+		"heavy_kick": CardDataScript.make("heavy_kick", "Heavy Kick", "HK", "Committed Renka kick finisher.", 18, 14, 6, 0, 13, 92.0, 0.0, -5, 54.0, 28.0, 44.0, -86.0, ["attack", "finisher"], [], 13, 13, 18, "HIGH")
 	}
 
 	var ids := [
@@ -288,6 +288,8 @@ func _card_from_snapshot(snapshot: Dictionary) -> Resource:
 	card.hitbox_height = float(snapshot.get("hitbox_height", 0.0))
 	card.hitbox_offset_x = float(snapshot.get("hitbox_offset_x", 0.0))
 	card.hitbox_offset_y = float(snapshot.get("hitbox_offset_y", 0.0))
+	card.attack_level = String(snapshot.get("attack_level", "MID"))
+	card.knockback = float(snapshot.get("knockback", 0.0))
 	card.tags = (snapshot.get("tags", []) as Array).duplicate()
 	card.allowed_follow_up_card_ids = (snapshot.get("allowed_follow_up_card_ids", []) as Array).duplicate()
 	return card

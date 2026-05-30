@@ -25,7 +25,8 @@ The combat engine should remain input-source agnostic. Cards, direct fighting-ga
 - `RouteSystem`: combo route reset, repeat-move decay, route helpers, and future follow-up/draw rules.
 - `MovementSystem`: duel spacing, step/backstep/jump movement, movement frame costs, and card spacing effects.
 - `MovementFlowSystem`: slow-neutral live movement, neutral time scale, live A/D repositioning, enemy approach movement, and movement-mode debug state.
-- `HitboxSystem`: hurtbox and attack hitbox construction, hit prediction, debug hitbox lifetimes, and future active collision-window hooks.
+- `HitboxDefinition` / `MoveDefinition`: data-shaped combat move definitions. Moves expose startup, active, recovery, hitbox size/offset, attack level, damage, stance damage, knockback, animation key, tags, and future extension points such as armor, invulnerability, projectiles, and grabs.
+- `HitboxSystem`: gameplay authority for active hitbox state. It builds move definitions from card/enemy data, owns attack hitbox activation/deactivation, overlap checks, active/recovery debug phase state, and keeps character scripts from directly deciding collision timing or hitbox profiles. Characters may play animations and expose visual state, but they should not own gameplay hitbox timing.
 - `TradeSystem`: trade recovery values and post-trade frame advantage calculation.
 - `ReactionWindowSystem`: slow-time reaction countdown, impact bar progress, live guard input tracking, guard startup state, and perfect-block timing windows.
 - `EnemyAISystem`: enemy decision state, tier/profile config, situation scoring, spacing checks, punish candidate selection, pressure reactions, boss phase hooks, and enemy intent choice.
@@ -40,6 +41,8 @@ Cards are a deckfighter UX/control source, not the combat engine primitive. They
 Enemy attack definitions now live in `scripts/enemy/enemy_move_data.gd`, and stance defaults live in `scripts/enemy/enemy_stance_config.gd`. `enemy.gd` still owns runtime enemy state for now, but new enemy move/timing config should be added through data-shaped enemy config files instead of inline runtime logic.
 
 Animation and timing should consume combat-frame data from the systems. Animation should not become the authority for combat logic timing. Placeholder combat visuals should read structured actor/action/phase data from `ActorCombatState` and `CombatTimeline`, while final animation/camera/focus-window work should keep `CombatStateMachine`, `CombatClock`, and combat rules as the source of truth.
+
+Hitbox calibration is currently manual and author-driven. `F6` toggles a temporary calibration overlay that draws rendered sprite alpha bounds, pushboxes, hurtboxes, and HitboxSystem move boxes in startup/active/recovery colors. This is for tuning authored fighting-game boxes against the PNG-rendered characters; it should not become pixel-derived hitbox generation. `enable_hitbox_trace_log` emits compact `MOVE_DEF` and `HITBOX_CHECK` JSON-style combat log lines with the actual gameplay rectangles, source offsets/sizes, facing, scales, defender state, overlap, gaps, and final result.
 
 ## TODO Boundaries
 
