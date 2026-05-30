@@ -5,10 +5,10 @@ const SpriteFramesLoader := preload("res://scripts/animation/png_sequence_sprite
 const Manifest := preload("res://scripts/characters/kai_animation_manifest.gd")
 
 const KAI_ATTACKS := {
-	"light_punch": {"id": "light_punch", "name": "Kai Light Punch", "type": "MID", "damage": 12, "stance_damage": 0, "startup": 9, "startup_frame": 9, "active": 3, "recovery": 16, "range_min": 0.0, "range_max": 90.0, "range": 90.0, "counter_damage": 16, "hit_level": "MID", "on_hit_adv": 1, "on_block_adv": -1, "hitbox_width": 95.0, "hitbox_height": 55.0, "hitbox_offset_x": 47.5, "hitbox_offset_y": -40.0, "animation_key": "light_punch", "tags": ["poke"], "ai_use_case": ["poke", "pressure_starter", "fast_punish"]},
-	"light_kick": {"id": "light_kick", "name": "Kai Light Kick", "type": "MID", "damage": 12, "stance_damage": 0, "startup": 9, "startup_frame": 9, "active": 3, "recovery": 16, "range_min": 0.0, "range_max": 90.0, "range": 90.0, "counter_damage": 16, "hit_level": "MID", "on_hit_adv": 1, "on_block_adv": -1, "hitbox_width": 95.0, "hitbox_height": 55.0, "hitbox_offset_x": 47.5, "hitbox_offset_y": -40.0, "animation_key": "light_kick", "tags": ["poke"], "ai_use_case": ["poke", "pressure_starter"]},
-	"heavy_kick": {"id": "heavy_kick", "name": "Kai Heavy Kick", "type": "HIGH", "damage": 14, "stance_damage": 0, "startup": 6, "startup_frame": 6, "active": 3, "recovery": 14, "range_min": 0.0, "range_max": 80.0, "range": 80.0, "counter_damage": 18, "hit_level": "HIGH", "on_hit_adv": 1, "on_block_adv": -2, "hitbox_width": 85.0, "hitbox_height": 45.0, "hitbox_offset_x": 42.5, "hitbox_offset_y": -65.0, "animation_key": "heavy_kick", "tags": ["fast", "anti_air"], "ai_use_case": ["fast_punish", "anti_air", "mash"]},
-	"heavy_punch": {"id": "heavy_punch", "name": "Kai Heavy Punch", "type": "OVERHEAD", "damage": 16, "stance_damage": 0, "startup": 15, "startup_frame": 15, "active": 4, "recovery": 22, "range_min": 0.0, "range_max": 85.0, "range": 85.0, "counter_damage": 22, "hit_level": "OVERHEAD", "on_hit_adv": 3, "on_block_adv": -6, "hitbox_width": 100.0, "hitbox_height": 75.0, "hitbox_offset_x": 50.0, "hitbox_offset_y": -70.0, "animation_key": "heavy_punch", "tags": ["slow", "starter"], "ai_use_case": ["overhead", "pressure_starter", "stance_breaker"]}
+	"light_punch": {"id": "light_punch", "name": "Kai Light Punch", "type": "MID", "attack_level": "MID", "damage": 12, "stance_damage": 0, "startup": 9, "startup_frame": 9, "active": 3, "recovery": 16, "range_min": 0.0, "range_max": 60.0, "range": 60.0, "counter_damage": 16, "hit_level": "MID", "on_hit_adv": 1, "on_block_adv": -1, "hitbox_width": 38.0, "hitbox_height": 22.0, "hitbox_offset_x": 31.0, "hitbox_offset_y": -72.0, "animation_key": "light_punch", "tags": ["poke"], "ai_use_case": ["poke", "pressure_starter", "fast_punish"]},
+	"light_kick": {"id": "light_kick", "name": "Kai Light Kick", "type": "MID", "attack_level": "MID", "damage": 12, "stance_damage": 0, "startup": 9, "startup_frame": 9, "active": 3, "recovery": 16, "range_min": 0.0, "range_max": 66.0, "range": 66.0, "counter_damage": 16, "hit_level": "MID", "on_hit_adv": 1, "on_block_adv": -1, "hitbox_width": 46.0, "hitbox_height": 24.0, "hitbox_offset_x": 36.0, "hitbox_offset_y": -42.0, "animation_key": "light_kick", "tags": ["poke"], "ai_use_case": ["poke", "pressure_starter"]},
+	"heavy_kick": {"id": "heavy_kick", "name": "Kai Heavy Kick", "type": "HIGH", "attack_level": "HIGH", "damage": 14, "stance_damage": 0, "startup": 6, "startup_frame": 6, "active": 3, "recovery": 14, "range_min": 0.0, "range_max": 70.0, "range": 70.0, "counter_damage": 18, "hit_level": "HIGH", "on_hit_adv": 1, "on_block_adv": -2, "hitbox_width": 42.0, "hitbox_height": 24.0, "hitbox_offset_x": 38.0, "hitbox_offset_y": -102.0, "animation_key": "heavy_kick", "tags": ["fast", "anti_air"], "ai_use_case": ["fast_punish", "anti_air", "mash"]},
+	"heavy_punch": {"id": "heavy_punch", "name": "Kai Heavy Punch", "type": "OVERHEAD", "attack_level": "OVERHEAD", "damage": 16, "stance_damage": 0, "startup": 15, "startup_frame": 15, "active": 4, "recovery": 22, "range_min": 0.0, "range_max": 64.0, "range": 64.0, "counter_damage": 22, "hit_level": "OVERHEAD", "on_hit_adv": 3, "on_block_adv": -6, "hitbox_width": 44.0, "hitbox_height": 46.0, "hitbox_offset_x": 32.0, "hitbox_offset_y": -92.0, "animation_key": "heavy_punch", "tags": ["slow", "starter"], "ai_use_case": ["overhead", "pressure_starter", "stance_breaker"]}
 }
 const DEBUG_ATTACK_CYCLE := ["light_punch", "light_kick", "heavy_kick", "heavy_punch"]
 
@@ -17,6 +17,7 @@ const DEBUG_ATTACK_CYCLE := ["light_punch", "light_kick", "heavy_kick", "heavy_p
 @export var source_faces_left := true
 @export var use_debug_attack_cycle := true
 @export var debug_cycle_ignores_range := true
+@export var hitbox_definition_scale := Vector2.ONE
 
 var _current_kai_animation := ""
 var _facing_sign := 1.0
@@ -171,6 +172,10 @@ func set_facing_direction(direction: float) -> void:
 	else:
 		_facing_sign = 1.0 if direction > 0.0 else -1.0
 	_apply_sprite_scale()
+
+func get_hitbox_definition_scale() -> Vector2:
+	var root_scale := global_transform.get_scale()
+	return Vector2(absf(root_scale.x), absf(root_scale.y)) * hitbox_definition_scale
 
 func _animation_for_timeline(action_name: String, hit_level: String) -> String:
 	var normalized := action_name.to_lower().replace(" ", "_")

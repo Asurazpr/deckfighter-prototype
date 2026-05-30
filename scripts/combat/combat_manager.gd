@@ -40,6 +40,12 @@ const DEBUG_ATTACK_HITBOX_LIFETIME := 0.25
 @export var max_duel_distance := 260.0
 @export var min_duel_distance := 55.0
 @export var show_debug_hitboxes := true
+@export var show_hitbox_calibration := false
+@export var show_sprite_bounds_debug := false
+@export var enable_hitbox_trace_log := true
+@export var sprite_hurtbox_inset_ratio := Vector4(0.05, 0.02, 0.05, 0.0)
+@export var crouch_hurtbox_width_scale := 0.82
+@export var crouch_hurtbox_height_scale := 0.58
 @export var show_prediction_assist := true
 @export var perfect_block_window_frames := 1
 @export var max_queue_size := 3
@@ -79,6 +85,8 @@ var combat_trace_events: Array[Dictionary] = []
 var defensive_reaction_retry_count := 0
 var defensive_reaction_wait_remaining := 0.0
 var defensive_reaction_fallback := "None"
+var reaction_jump_motion_active := false
+var reaction_jump_ground_y := 0.0
 var last_no_attack_reaches_reason := "None"
 var combat_clock
 var frame_system
@@ -663,13 +671,13 @@ func _run_enemy_attack(start_reaction := true) -> void:
 		log_message.emit("Enemy next startup modified by %s." % _signed_int(initiative_offset))
 	initiative_offset = 0
 	remaining_startup_frames = enemy_effective_startup_frame
-	combat_timeline.begin_from_enemy_attack(current_enemy_intent, enemy_attack_data, enemy_effective_startup_frame)
+	var enemy_move_def: MoveDefinition = hitbox_system.begin_enemy_move(current_enemy_intent, enemy_attack_data, enemy_effective_startup_frame)
+	combat_timeline.begin_from_move("ENEMY", enemy_move_def)
 	_show_enemy_timeline_phase()
 	if start_reaction:
 		_start_reaction_window(_enemy_attack_hit_level(current_enemy_intent), enemy_effective_startup_frame)
 		_transition_combat_state(CombatStateMachineScript.State.REACTION_WINDOW, "reaction window started")
 	last_player_action_startup = 0
-	_clear_attack_hitboxes()
 	player.set_free_movement_enabled(false)
 	log_message.emit("Enemy intent: %s." % enemy.current_attack)
 	log_message.emit("%s; starting %s." % [approach_end_reason, enemy.current_attack])
@@ -964,6 +972,7 @@ func _finish_player_action_lifecycle(token: int, reason := "recovery_complete") 
 	player_action_lifecycle_recovery_frames_remaining = 0.0
 	player_action_lifecycle_recovery_running = false
 	current_player_action_request = null
+	hitbox_system.finish_player_move()
 	if combat_timeline != null and combat_timeline.actor == "PLAYER":
 		combat_timeline.finish_action()
 	if player != null and player.has_method("finish_action_from_combat_manager"):
@@ -990,6 +999,7 @@ func _cancel_player_action_lifecycle(reason := "cancelled", finish_visual := fal
 	player_action_lifecycle_recovery_frames_remaining = 0.0
 	player_action_lifecycle_recovery_running = false
 	current_player_action_request = null
+	hitbox_system.finish_player_move()
 	log_message.emit("Player action lifecycle cancelled: %s." % reason)
 	if finish_visual and player != null and player.has_method("finish_action_from_combat_manager"):
 		player.finish_action_from_combat_manager(reason)
@@ -1007,6 +1017,7 @@ func _begin_player_trade_recovery_lifecycle(card: Resource, recovery_frames: int
 	player_action_lifecycle_recovery_frames_remaining = float(maxi(0, recovery_frames))
 	player_action_lifecycle_recovery_running = true
 	current_player_action_request = ActionRequestScript.from_card("player", card, -1, Engine.get_process_frames()) if card != null else null
+	hitbox_system.enter_player_recovery()
 	log_message.emit("Player trade recovery lifecycle started: action=%s card=%s recovery_frames=%d." % [
 		player_action_lifecycle_action_id,
 		player_action_lifecycle_card_name,
@@ -1161,28 +1172,34 @@ func _resolve_enemy_impact_after_countdown(defense_type: String) -> void:
 	_begin_enemy_resolution()
 	var result: Dictionary = enemy.resolve_attack()
 	if result.is_empty():
+		reaction_window_system.finish_reaction_motion()
 		_finish_enemy_resolution()
 		return
 
 	var enemy_attack_hits := _activate_enemy_attack_hitbox(result)
 	if defense_type == "wait":
 		if not enemy_attack_hits:
+			hitbox_system.trace_last_check("whiff")
 			log_message.emit("Enemy whiffed after wait.")
 			_reset_pressure_sequence()
 			_change_frame_advantage(1)
 		else:
+			hitbox_system.trace_last_check("hit")
 			player.take_damage(result["damage"])
 			_set_frame_advantage_to_neutral()
 			log_message.emit("Wait failed: enemy was in range.")
 	elif not enemy_attack_hits or _enemy_attack_whiffs_against_defense(defense_type, result):
+		hitbox_system.trace_last_check(_hitbox_trace_avoidance_result(defense_type, result))
 		log_message.emit("Enemy attack whiffed due to spacing.")
 		_reset_pressure_sequence()
 		_change_frame_advantage(1)
 	elif _defense_answers_attack(defense_type, result):
+		hitbox_system.trace_last_check("block")
 		_reset_pressure_sequence()
 		_change_frame_advantage(2)
 		log_message.emit("Normal defense success.")
 	else:
+		hitbox_system.trace_last_check("hit")
 		player.take_damage(result["damage"])
 		_set_frame_advantage_to_neutral()
 		log_message.emit("Defense failed.")
@@ -1193,20 +1210,24 @@ func _resolve_block_after_startup(defense_type: String, startup_after_block: int
 	_begin_enemy_resolution()
 	var result: Dictionary = enemy.resolve_attack()
 	if result.is_empty():
+		reaction_window_system.finish_reaction_motion()
 		_finish_enemy_resolution()
 		return
 
 	var enemy_attack_hits := _activate_enemy_attack_hitbox(result)
 	if not enemy_attack_hits or _enemy_attack_whiffs_against_defense(defense_type, result):
+		hitbox_system.trace_last_check(_hitbox_trace_avoidance_result(defense_type, result))
 		log_message.emit("Enemy attack whiffed due to spacing.")
 		_reset_pressure_sequence()
 		_change_frame_advantage(1)
 	elif startup_after_block < 0:
+		hitbox_system.trace_last_check("hit")
 		player.take_damage(result["counter_damage"])
 		_set_frame_advantage_to_neutral()
 		log_message.emit("Defense failed: too late.")
 	elif _defense_answers_attack(defense_type, result):
 		if startup_after_block <= perfect_block_window_frames:
+			hitbox_system.trace_last_check("perfect_block")
 			_reset_pressure_sequence()
 			_change_frame_advantage(4)
 			var stance_protected := _apply_block_stance_damage(15, "perfect_block")
@@ -1219,10 +1240,12 @@ func _resolve_block_after_startup(defense_type: String, startup_after_block: int
 			player.show_state("PERFECT BLOCK", Color.GOLD)
 			await _run_perfect_block_hitstop()
 		else:
+			hitbox_system.trace_last_check("block")
 			_reset_pressure_sequence()
 			_change_frame_advantage(2)
 			log_message.emit("Normal block: too early for perfect.")
 	else:
+		hitbox_system.trace_last_check("hit")
 		player.take_damage(result["damage"])
 		_set_frame_advantage_to_neutral()
 		log_message.emit("Defense failed.")
@@ -1234,32 +1257,38 @@ func _resolve_reaction_no_defense() -> void:
 	_begin_enemy_resolution()
 	var result: Dictionary = enemy.resolve_attack()
 	if result.is_empty():
+		reaction_window_system.finish_reaction_motion()
 		_finish_enemy_resolution()
 		return
 
 	var enemy_attack_hits := _activate_enemy_attack_hitbox(result)
 	if not enemy_attack_hits:
+		hitbox_system.trace_last_check("whiff")
 		log_message.emit("Enemy attack whiffed due to spacing.")
 		log_message.emit("Impact resolved: whiff.")
 		reaction_window_system.set_impact_resolution("Whiff")
 		_reset_pressure_sequence()
 		_change_frame_advantage(1)
 	else:
+		hitbox_system.trace_last_check("hit")
 		player.take_damage(result["damage"])
 		_set_frame_advantage_to_neutral()
 		log_message.emit("Impact resolved: hit.")
 		reaction_window_system.set_impact_resolution("Hit")
+	reaction_window_system.finish_reaction_motion()
 	await _finish_enemy_resolution_after_recovery()
 
 func _resolve_reaction_block(defense_type: String, input_progress: float) -> void:
 	_begin_enemy_resolution()
 	var result: Dictionary = enemy.resolve_attack()
 	if result.is_empty():
+		reaction_window_system.finish_reaction_motion()
 		_finish_enemy_resolution()
 		return
 
 	var enemy_attack_hits := _activate_enemy_attack_hitbox(result)
 	if not enemy_attack_hits or _enemy_attack_whiffs_against_defense(defense_type, result):
+		hitbox_system.trace_last_check(_hitbox_trace_avoidance_result(defense_type, result))
 		if String(result["type"]) == "LOW" and _is_jump_action(defense_type):
 			log_message.emit("LOW sweep whiffed due to jump.")
 		else:
@@ -1270,6 +1299,7 @@ func _resolve_reaction_block(defense_type: String, input_progress: float) -> voi
 		_change_frame_advantage(1)
 	elif _defense_answers_attack(defense_type, result):
 		if input_progress >= PERFECT_BLOCK_REACTION_PROGRESS:
+			hitbox_system.trace_last_check("perfect_block")
 			_reset_pressure_sequence()
 			_change_frame_advantage(4)
 			var stance_protected := _apply_block_stance_damage(15, "perfect_block")
@@ -1284,12 +1314,14 @@ func _resolve_reaction_block(defense_type: String, input_progress: float) -> voi
 			player.show_state("PERFECT BLOCK", Color.GOLD)
 			await _run_perfect_block_hitstop()
 		else:
+			hitbox_system.trace_last_check("block")
 			_reset_pressure_sequence()
 			_change_frame_advantage(2)
 			log_message.emit("Normal block: too early for perfect.")
 			log_message.emit("Impact resolved: normal block.")
 			reaction_window_system.set_impact_resolution("Normal Block")
 	else:
+		hitbox_system.trace_last_check("hit")
 		if String(result["type"]) == "LOW" and reaction_window_system.jump_started and not reaction_window_system.jump_active:
 			log_message.emit("Jump too late; sweep hit.")
 		player.take_damage(result["damage"])
@@ -1299,6 +1331,7 @@ func _resolve_reaction_block(defense_type: String, input_progress: float) -> voi
 		reaction_window_system.set_impact_resolution("Hit")
 
 	_release_player_block_if_needed(defense_type)
+	reaction_window_system.finish_reaction_motion()
 	await _finish_enemy_resolution_after_recovery()
 
 func _begin_enemy_resolution() -> void:
@@ -1314,6 +1347,7 @@ func _finish_enemy_resolution() -> void:
 	enemy.finish_attack()
 	current_enemy_action_request = null
 	combat_timeline.finish_action()
+	hitbox_system.finish_enemy_move()
 	enemy.clear_timeline_visual()
 	attack_in_progress = false
 	enemy_action_recovery_frames_remaining = 0.0
@@ -1333,6 +1367,7 @@ func _finish_enemy_resolution_after_recovery() -> void:
 	_transition_combat_state(CombatStateMachineScript.State.ENEMY_RECOVERY, "enemy recovery")
 	enemy_action_recovery_frames_remaining = float(int(round(ATTACK_RECOVERY * 60.0)))
 	log_message.emit("ENEMY_RECOVERY set: recovery_frames=%d intent=%s." % [int(ceil(enemy_action_recovery_frames_remaining)), current_enemy_intent if current_enemy_intent != "" else "None"])
+	hitbox_system.enter_enemy_recovery()
 	combat_timeline.mark_recovery()
 	_show_enemy_timeline_phase()
 	advance_combat_frames(int(round(ATTACK_RECOVERY * 60.0)))
@@ -1632,8 +1667,10 @@ func _resolve_intent_trade(index: int, preview_card: Resource, enemy_startup_aft
 	_apply_hit_stance_damage(preview_card, "trade")
 	_complete_player_card_timeline(preview_card)
 	if enemy_attack_hits:
+		hitbox_system.trace_last_check("trade")
 		player.take_damage(result["damage"])
 	else:
+		hitbox_system.trace_last_check("whiff")
 		log_message.emit("Enemy trade hitbox had no overlap.")
 	player.set_free_movement_enabled(false)
 	var traded_intent := current_enemy_intent
@@ -1664,8 +1701,10 @@ func _resolve_intent_trade_snapshot(snapshot: Dictionary, preview_card: Resource
 	_apply_hit_stance_damage(preview_card, "trade_snapshot")
 	_complete_player_card_timeline(preview_card)
 	if enemy_attack_hits:
+		hitbox_system.trace_last_check("trade")
 		player.take_damage(result["damage"])
 	else:
+		hitbox_system.trace_last_check("whiff")
 		log_message.emit("Enemy trade hitbox had no overlap.")
 	player.set_free_movement_enabled(false)
 	var traded_intent := current_enemy_intent
@@ -1696,9 +1735,11 @@ func _resolve_enemy_counter_hit(counter_hit := true) -> void:
 		return
 	var damage := int(result["counter_damage"])
 	if not _activate_enemy_attack_hitbox(result):
+		hitbox_system.trace_last_check("whiff")
 		log_message.emit("Enemy attack whiffed due to spacing.")
 		_change_frame_advantage(1)
 	else:
+		hitbox_system.trace_last_check("hit")
 		player.take_damage(damage if counter_hit else int(result["damage"]))
 		_set_frame_advantage_to_neutral()
 		log_message.emit("Defense failed.")
@@ -1997,6 +2038,35 @@ func get_player_attack_hitbox() -> Rect2:
 func get_enemy_attack_hitbox() -> Rect2:
 	return hitbox_system.enemy_active_attack_hitbox()
 
+func get_player_sprite_bounds() -> Rect2:
+	return hitbox_system.player_sprite_bounds()
+
+func get_enemy_sprite_bounds() -> Rect2:
+	return hitbox_system.enemy_sprite_bounds()
+
+func get_player_origin() -> Vector2:
+	return player.global_position if player != null else Vector2.ZERO
+
+func get_enemy_origin() -> Vector2:
+	return enemy.global_position if enemy != null else Vector2.ZERO
+
+func get_player_debug_attack_hitbox() -> Rect2:
+	return hitbox_system.player_debug_attack_hitbox()
+
+func get_enemy_debug_attack_hitbox() -> Rect2:
+	return hitbox_system.enemy_debug_attack_hitbox()
+
+func get_player_hitbox_phase() -> String:
+	return hitbox_system.player_debug_phase()
+
+func get_enemy_hitbox_phase() -> String:
+	return hitbox_system.enemy_debug_phase()
+
+func toggle_hitbox_calibration() -> void:
+	show_hitbox_calibration = not show_hitbox_calibration
+	show_sprite_bounds_debug = show_hitbox_calibration
+	log_message.emit("Hitbox calibration overlay %s." % ("enabled" if show_hitbox_calibration else "disabled"))
+
 func _make_card_hitbox(card: Resource) -> Rect2:
 	return hitbox_system.card_hitbox(card)
 
@@ -2025,8 +2095,13 @@ func _card_would_hit_enemy_after_movement(card: Resource) -> bool:
 	return hitbox_system.card_would_hit_enemy_after_movement(card)
 
 func _activate_player_card_hitbox(card: Resource) -> bool:
-	_set_player_attack_hitbox(_make_card_hitbox(card))
-	var overlaps := not _card_needs_hitbox(card) or _player_attack_overlaps_enemy()
+	var result: Dictionary = hitbox_system.activate_player_card(card)
+	var overlaps := bool(result.get("overlaps", false)) or not _card_needs_hitbox(card)
+	if combat_timeline.actor == "PLAYER":
+		combat_timeline.mark_active()
+		_show_player_timeline_phase()
+	var outcome := "hit" if overlaps else "whiff"
+	hitbox_system.trace_last_check(outcome)
 	if overlaps:
 		log_message.emit("%s active hitbox overlapped enemy hurtbox." % card.display_name)
 	else:
@@ -2034,8 +2109,11 @@ func _activate_player_card_hitbox(card: Resource) -> bool:
 	return overlaps
 
 func _activate_enemy_attack_hitbox(attack_data: Dictionary) -> bool:
-	_set_enemy_attack_hitbox(_make_enemy_attack_hitbox(attack_data))
-	var overlaps := _enemy_attack_overlaps_player()
+	var result: Dictionary = hitbox_system.activate_enemy_attack(attack_data)
+	var overlaps := bool(result.get("overlaps", false))
+	if combat_timeline.actor == "ENEMY":
+		combat_timeline.mark_active()
+		_show_enemy_timeline_phase()
 	if overlaps:
 		log_message.emit("%s active hitbox overlapped player hurtbox." % String(attack_data.get("name", attack_data.get("id", "Enemy attack"))))
 	else:
@@ -2063,7 +2141,7 @@ func _clear_attack_hitboxes() -> void:
 func _complete_player_card_timeline(card: Resource) -> void:
 	if combat_timeline == null or combat_timeline.actor != "PLAYER" or combat_timeline.phase == CombatTimelineScript.Phase.DONE:
 		return
-	hitbox_system.clear_attack_hitboxes()
+	hitbox_system.enter_player_recovery()
 	combat_timeline.mark_recovery()
 	_apply_timeline_visual()
 	_set_player_action_lifecycle_phase("RECOVERY", "hit_resolution_complete")
@@ -2096,7 +2174,8 @@ func _create_hitbox_debug_drawer() -> void:
 
 func _begin_player_card_timeline(card: Resource) -> void:
 	_transition_combat_state(CombatStateMachineScript.State.EXECUTING_PLAYER_ACTION, "player action: %s" % card.id)
-	combat_timeline.begin_from_card(card)
+	var move_def: MoveDefinition = hitbox_system.begin_player_move(card)
+	combat_timeline.begin_from_move("PLAYER", move_def)
 	_set_player_action_lifecycle_phase("STARTUP", "timeline_begin")
 	_show_player_timeline_phase()
 
@@ -2153,19 +2232,27 @@ func apply_reaction_backstep() -> void:
 	movement_system.move_player_away_from_enemy(80.0 * _reaction_movement_time_scale())
 	_clamp_duel_distance()
 
-func apply_reaction_jump_movement() -> void:
-	if combat_over or not _is_reaction_window_state():
+func start_reaction_jump_movement() -> void:
+	if player == null:
 		return
-	var scaled_jump_delta := 55.0 * _reaction_movement_time_scale()
-	if Input.is_key_pressed(KEY_D):
-		movement_system.move_player_toward_enemy(scaled_jump_delta)
-		log_message.emit("Player jumped forward.")
-	elif Input.is_key_pressed(KEY_A):
-		movement_system.move_player_away_from_enemy(scaled_jump_delta)
-		log_message.emit("Player jumped back.")
-	else:
-		log_message.emit("Player neutral jumped.")
+	reaction_jump_motion_active = true
+	reaction_jump_ground_y = player.global_position.y
+
+func apply_reaction_jump_movement(direction: float, real_delta: float, lift_progress: float) -> void:
+	if combat_over or not _is_reaction_window_state() or player == null:
+		return
+	if not reaction_jump_motion_active:
+		start_reaction_jump_movement()
+	var scaled_delta := real_delta * _reaction_movement_time_scale()
+	player.global_position.x += clampf(direction, -1.0, 1.0) * reaction_player_move_speed * scaled_delta
+	player.global_position.y = reaction_jump_ground_y - reaction_jump_hurtbox_lift * clampf(lift_progress, 0.0, 1.0)
 	_clamp_duel_distance()
+
+func finish_reaction_jump_movement() -> void:
+	if not reaction_jump_motion_active or player == null:
+		return
+	player.global_position.y = reaction_jump_ground_y
+	reaction_jump_motion_active = false
 
 func _reaction_movement_time_scale() -> float:
 	return clampf(Engine.time_scale, 0.0, 1.0)
@@ -2174,7 +2261,7 @@ func is_player_crouching() -> bool:
 	return player != null and player.has_method("is_crouching") and player.is_crouching()
 
 func get_player_hurtbox_offset() -> Vector2:
-	if reaction_window_system != null and reaction_window_system.jump_active:
+	if reaction_window_system != null and reaction_window_system.jump_active and not reaction_jump_motion_active:
 		return Vector2(0.0, -reaction_jump_hurtbox_lift)
 	return Vector2.ZERO
 
@@ -2256,6 +2343,14 @@ func _spend_pressure_frames(cost: int, defer_pressure_end_for_queued_card := fal
 func _enemy_attack_whiffs_against_defense(defense_type: String, attack_data: Dictionary) -> bool:
 	var attack_type := String(attack_data["type"])
 	return (attack_type == "HIGH" and defense_type == "crouch_block") or (attack_type == "LOW" and _is_jump_action(defense_type))
+
+func _hitbox_trace_avoidance_result(defense_type: String, attack_data: Dictionary) -> String:
+	var attack_type := String(attack_data["type"])
+	if attack_type == "HIGH" and defense_type == "crouch_block":
+		return "crouch_evade"
+	if attack_type == "LOW" and _is_jump_action(defense_type):
+		return "jump_evade"
+	return "whiff"
 
 func _is_jump_action(action: String) -> bool:
 	return action == "jump" or action == "jump_forward" or action == "jump_back" or action == "neutral_jump"
@@ -2554,6 +2649,8 @@ func _player_has_stale_action_without_request() -> bool:
 	if player == null or not player.has_method("get_animation_debug"):
 		return false
 	var debug: Dictionary = player.get_animation_debug()
+	if bool(debug.get("visual_return_pending", false)):
+		return false
 	var action_state := String(debug.get("action_state", "NEUTRAL"))
 	if action_state == "NEUTRAL" or action_state == "":
 		return false
@@ -2572,6 +2669,8 @@ func _player_has_real_action_lifecycle() -> bool:
 	if player_trade_recovery_frames_remaining > 0.0:
 		return true
 	var debug := _player_debug()
+	if bool(debug.get("visual_return_pending", false)):
+		return true
 	var action_state := String(debug.get("action_state", "NEUTRAL"))
 	var animation_key := String(debug.get("animation_key", "idle")).to_lower()
 	var action_name := String(debug.get("action_name", "None")).to_lower()

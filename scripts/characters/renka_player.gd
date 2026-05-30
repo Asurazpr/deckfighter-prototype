@@ -10,23 +10,17 @@ const Manifest := preload("res://scripts/characters/renka_animation_manifest.gd"
 enum RenkaState { IDLE, RUNNING, ATTACKING, BLOCKING, HITSTUN }
 enum ActionState { NEUTRAL, ATTACK_STARTUP, ATTACK_ACTIVE, ATTACK_RECOVERY, BLOCK_START, BLOCK_HOLD, BLOCK_RECOVERY, HITSTUN }
 
-const HITBOX_PROFILES := {
-	"light_punch": {"position": Vector2(58.0, -82.0), "size": Vector2(84.0, 42.0)},
-	"heavy_punch": {"position": Vector2(68.0, -82.0), "size": Vector2(112.0, 54.0)},
-	"light_kick": {"position": Vector2(62.0, -38.0), "size": Vector2(96.0, 38.0)},
-	"heavy_kick": {"position": Vector2(76.0, -42.0), "size": Vector2(124.0, 48.0)},
-	"uppercut": {"position": Vector2(48.0, -88.0), "size": Vector2(78.0, 108.0)}
-}
-
 @export var sprite_scale := Vector2(0.22, 0.22)
 @export var sprite_pivot := Vector2(902.0, 1052.0)
 @export var cancel_window_progress := 0.82
 @export var block_hold_frame := 40
 @export var use_spritesheets := Manifest.USE_SPRITESHEETS
 @export var default_facing_sign := -1.0
+@export var hitbox_definition_scale := Vector2.ONE
 
 var renka_state := RenkaState.IDLE
 var action_state := ActionState.NEUTRAL
+var logic_state := ActionState.NEUTRAL
 var _current_renka_animation := ""
 var _animation_backend := "png_sequence"
 var _facing_sign := -1.0
@@ -37,11 +31,9 @@ var _active_card: Resource
 var _hit_confirm_token := 0
 var _block_release_requested := false
 var _visual_return_pending := false
+var _live_locomotion_visual_active := false
 
 @onready var animated_sprite: AnimatedSprite2D = $AnimatedSprite2D
-@onready var attack_hitbox: Area2D = $AttackHitbox
-@onready var hurtbox: Area2D = $Hurtbox
-@onready var attack_hitbox_shape: CollisionShape2D = $AttackHitbox/CollisionShape2D
 
 func _ready() -> void:
 	super._ready()
@@ -66,6 +58,7 @@ func take_damage(amount: int) -> void:
 	hp_changed.emit(hp, max_hp)
 	force_finish_action()
 	action_state = ActionState.HITSTUN
+	logic_state = ActionState.HITSTUN
 	_lock_action()
 	_enter_renka_state(RenkaState.HITSTUN, "light_hitstun")
 	_flash(Color.INDIAN_RED, "HIT")
@@ -75,12 +68,13 @@ func perform_card_action(card: Resource) -> void:
 	_hit_confirm_token += 1
 	_cancel_window_open = false
 	followup_window_active = false
+	_live_locomotion_visual_active = false
 	action_state = ActionState.ATTACK_STARTUP
+	logic_state = ActionState.ATTACK_STARTUP
 	_lock_action()
 	var animation_name := _animation_for_card(card)
 	print("Renka action requested: %s -> playing animation: %s" % [String(card.id), animation_name])
 	_enter_renka_state(RenkaState.ATTACKING, animation_name)
-	_configure_attack_hitbox(_current_renka_animation)
 	_flash(Color.GOLD, card.display_name.to_upper())
 
 func wait_for_action_hit_confirm(card: Resource) -> void:
@@ -92,14 +86,17 @@ func wait_for_action_hit_confirm(card: Resource) -> void:
 	if token != _hit_confirm_token:
 		return
 	action_state = ActionState.ATTACK_ACTIVE
+	logic_state = ActionState.ATTACK_ACTIVE
 	var active_duration := maxf(0.01, float(maxi(1, active_end_frame - hit_frame + 1)) / fps)
-	_disable_attack_hitbox_after(token, active_duration)
+	_enter_recovery_after_active_window(token, active_duration)
 
-func _disable_attack_hitbox_after(token: int, duration: float) -> void:
+func _enter_recovery_after_active_window(token: int, duration: float) -> void:
 	await get_tree().create_timer(duration, false, true).timeout
 	if token == _hit_confirm_token:
 		if action_state == ActionState.ATTACK_ACTIVE:
 			action_state = ActionState.ATTACK_RECOVERY
+		if logic_state == ActionState.ATTACK_ACTIVE:
+			logic_state = ActionState.ATTACK_RECOVERY
 
 func show_timeline_phase(action_name: String, phase_name: String, phase_progress := 0.0, hit_level := "", hitbox_active := false) -> void:
 	current_animation_action = action_name
@@ -109,6 +106,8 @@ func show_timeline_phase(action_name: String, phase_name: String, phase_progress
 	current_animation_hitbox_active = hitbox_active
 	_set_state("%s\n%s" % [action_name.to_upper(), phase_name])
 	var animation_name := _animation_for_timeline(action_name, hit_level)
+	if animation_name != "run_forward" and animation_name != "run_backward":
+		_live_locomotion_visual_active = false
 	var state := _state_for_timeline(animation_name, phase_name)
 	_update_action_state_from_timeline(animation_name, phase_name, phase_progress)
 	_enter_renka_state(state, animation_name)
@@ -124,7 +123,6 @@ func clear_timeline_visual() -> void:
 	current_animation_progress = 0.0
 	current_animation_hit_level = ""
 	current_animation_hitbox_active = false
-	_set_attack_hitbox_active(false)
 	if attack_visual_continues:
 		_set_state("%s\nRECOVERY" % (previous_action.to_upper() if previous_action != "" and previous_action != "None" else "ACTION"))
 		return
@@ -149,6 +147,7 @@ func get_animation_debug() -> Dictionary:
 	base["facing"] = "right" if _facing_sign < 0.0 else "left"
 	base["renka_state"] = _state_name()
 	base["action_state"] = _action_state_name()
+	base["logic_state"] = _logic_state_name()
 	base["is_action_locked"] = is_action_locked
 	base["cancel_window_open"] = _cancel_window_open
 	base["followup_window_active"] = followup_window_active
@@ -156,14 +155,15 @@ func get_animation_debug() -> Dictionary:
 	return base
 
 func can_start_card_action() -> bool:
-	return action_state == ActionState.NEUTRAL or _cancel_window_open or followup_window_active
+	return logic_state == ActionState.NEUTRAL or _cancel_window_open or followup_window_active
 
 func card_action_rejection_reason() -> String:
-	return "state=%s current_action=%s action_locked=%s recovering=%s followup_window_active=%s cancel_window_active=%s animation=%s frame=%d" % [
+	return "logic_state=%s visual_state=%s current_action=%s action_locked=%s recovering=%s followup_window_active=%s cancel_window_active=%s animation=%s frame=%d" % [
+		_logic_state_name(),
 		_action_state_name(),
 		_current_renka_animation,
 		str(is_action_locked),
-		str(action_state == ActionState.ATTACK_RECOVERY or action_state == ActionState.BLOCK_RECOVERY),
+		str(logic_state == ActionState.ATTACK_RECOVERY or logic_state == ActionState.BLOCK_RECOVERY),
 		str(followup_window_active),
 		str(_cancel_window_open),
 		_current_renka_animation,
@@ -171,7 +171,7 @@ func card_action_rejection_reason() -> String:
 	]
 
 func open_followup_window() -> void:
-	if action_state == ActionState.HITSTUN or action_state == ActionState.BLOCK_START or action_state == ActionState.BLOCK_HOLD or action_state == ActionState.BLOCK_RECOVERY:
+	if logic_state == ActionState.HITSTUN or logic_state == ActionState.BLOCK_START or logic_state == ActionState.BLOCK_HOLD or logic_state == ActionState.BLOCK_RECOVERY:
 		return
 	followup_window_active = true
 	_unlock_action()
@@ -182,9 +182,8 @@ func finish_action_from_combat_manager(reason := "") -> void:
 	_cancel_window_open = false
 	followup_window_active = false
 	_block_release_requested = false
-	_set_attack_hitbox_active(false)
 	if renka_state == RenkaState.ATTACKING and animated_sprite != null and animated_sprite.is_playing():
-		action_state = ActionState.NEUTRAL
+		logic_state = ActionState.NEUTRAL
 		current_animation_action = "None"
 		current_animation_phase = "DONE"
 		current_animation_progress = 0.0
@@ -201,6 +200,7 @@ func release_block_action() -> void:
 		return
 	_block_release_requested = true
 	action_state = ActionState.BLOCK_RECOVERY
+	logic_state = ActionState.BLOCK_RECOVERY
 	_lock_action()
 	if animated_sprite != null and animated_sprite.sprite_frames != null and animated_sprite.sprite_frames.has_animation("block"):
 		animated_sprite.animation = "block"
@@ -214,7 +214,7 @@ func force_finish_action() -> void:
 	followup_window_active = false
 	_block_release_requested = false
 	_visual_return_pending = false
-	_set_attack_hitbox_active(false)
+	_live_locomotion_visual_active = false
 	_finish_action_to_neutral()
 
 func _configure_sprite() -> void:
@@ -247,9 +247,12 @@ func _configure_sprite() -> void:
 	animated_sprite.offset = -sprite_pivot
 	_apply_animation_visual_scale("idle")
 	animated_sprite.animation_finished.connect(_on_animation_finished)
-	_set_attack_hitbox_active(false)
 
 func _update_locomotion_animation() -> void:
+	if _visual_action_in_progress():
+		return
+	if _live_locomotion_visual_active:
+		return
 	if crouching:
 		_set_state("CROUCH")
 		_enter_renka_state(RenkaState.IDLE, "idle")
@@ -260,10 +263,37 @@ func _update_locomotion_animation() -> void:
 	else:
 		_enter_renka_state(RenkaState.IDLE, "idle")
 
+func show_live_locomotion(_direction: float, moving_forward: bool, phase_name: String, phase_progress := 0.0) -> void:
+	if _locomotion_visual_locked():
+		return
+	var animation_name := "run_forward" if moving_forward else "run_backward"
+	_live_locomotion_visual_active = true
+	current_animation_action = animation_name
+	current_animation_phase = phase_name
+	current_animation_progress = clampf(phase_progress, 0.0, 1.0)
+	current_animation_hit_level = ""
+	current_animation_hitbox_active = false
+	_set_state("%s\n%s" % [animation_name.to_upper(), phase_name])
+	_enter_renka_state(RenkaState.RUNNING, animation_name)
+
+func clear_live_locomotion_visual() -> void:
+	if not _live_locomotion_visual_active:
+		return
+	_live_locomotion_visual_active = false
+	if _locomotion_visual_locked():
+		return
+	current_animation_action = "None"
+	current_animation_phase = "DONE"
+	current_animation_progress = 0.0
+	current_animation_hit_level = ""
+	current_animation_hitbox_active = false
+	_set_state("READY")
+	_enter_renka_state(RenkaState.IDLE, "idle")
+
 func can_enter_neutral_crouch() -> bool:
 	return input_enabled \
-		and action_state == ActionState.NEUTRAL \
-		and not _visual_return_pending \
+		and logic_state == ActionState.NEUTRAL \
+		and not _visual_action_in_progress() \
 		and renka_state != RenkaState.ATTACKING \
 		and renka_state != RenkaState.BLOCKING \
 		and renka_state != RenkaState.HITSTUN
@@ -297,6 +327,10 @@ func set_facing_direction(direction: float) -> void:
 	_facing_sign = -1.0 if direction > 0.0 else 1.0
 	_apply_animation_visual_scale(_current_renka_animation if _current_renka_animation != "" else "idle")
 
+func get_hitbox_definition_scale() -> Vector2:
+	var root_scale := global_transform.get_scale()
+	return Vector2(absf(root_scale.x), absf(root_scale.y)) * hitbox_definition_scale
+
 func _animation_for_card(card: Resource) -> String:
 	var id := String(card.id)
 	var display_name := String(card.display_name).to_lower()
@@ -316,6 +350,12 @@ func _animation_for_timeline(action_name: String, hit_level: String) -> String:
 		return "block"
 	if normalized.find("hitstun") != -1 or normalized.find("hit") != -1:
 		return "light_hitstun"
+	if normalized.find("jump_forward") != -1:
+		return "run_forward"
+	if normalized.find("jump_back") != -1:
+		return "run_backward"
+	if normalized.find("neutral_jump") != -1 or normalized == "jump":
+		return "idle"
 	if normalized.find("run_forward") != -1 or normalized.find("walk_forward") != -1 or normalized.find("step_forward") != -1:
 		return "run_forward"
 	if normalized.find("run_backward") != -1 or normalized.find("backstep") != -1 or normalized.find("step_back") != -1:
@@ -337,6 +377,8 @@ func _state_for_timeline(animation_name: String, phase_name: String) -> int:
 		return RenkaState.BLOCKING
 	if animation_name.ends_with("hitstun"):
 		return RenkaState.HITSTUN
+	if String(current_animation_action).to_lower().find("jump") != -1:
+		return RenkaState.RUNNING if animation_name == "run_forward" or animation_name == "run_backward" else RenkaState.IDLE
 	if animation_name == "run_forward" or animation_name == "run_backward":
 		return RenkaState.RUNNING
 	if phase_name == "STARTUP" or phase_name == "ACTIVE" or phase_name == "IMPACT" or phase_name == "RECOVERY":
@@ -354,7 +396,6 @@ func _on_animation_finished() -> void:
 		action_animation_finished.emit(_current_renka_animation, _action_state_name())
 		return
 	if action_state == ActionState.ATTACK_STARTUP or action_state == ActionState.ATTACK_ACTIVE or action_state == ActionState.ATTACK_RECOVERY or action_state == ActionState.BLOCK_RECOVERY or action_state == ActionState.HITSTUN:
-		_set_attack_hitbox_active(false)
 		action_animation_finished.emit(_current_renka_animation, _action_state_name())
 
 func _state_name() -> String:
@@ -378,10 +419,12 @@ func _unlock_action() -> void:
 
 func _finish_action_to_neutral() -> void:
 	action_state = ActionState.NEUTRAL
+	logic_state = ActionState.NEUTRAL
 	_cancel_window_open = false
 	followup_window_active = false
 	_block_release_requested = false
 	_visual_return_pending = false
+	_live_locomotion_visual_active = false
 	current_animation_action = "None"
 	current_animation_phase = "DONE"
 	current_animation_progress = 0.0
@@ -395,11 +438,13 @@ func _update_action_state_from_timeline(animation_name: String, phase_name: Stri
 	if animation_name == "block":
 		if phase_name == "STARTUP":
 			action_state = ActionState.BLOCK_START
+			logic_state = ActionState.BLOCK_START
 			_cancel_window_open = false
 			followup_window_active = false
 			_lock_action()
 		elif phase_name == "ACTIVE" or phase_name == "IMPACT":
 			action_state = ActionState.BLOCK_HOLD
+			logic_state = ActionState.BLOCK_HOLD
 			_cancel_window_open = false
 			followup_window_active = false
 			_lock_action()
@@ -409,6 +454,7 @@ func _update_action_state_from_timeline(animation_name: String, phase_name: Stri
 
 	if animation_name == "light_hitstun" or animation_name == "heavy_hitstun":
 		action_state = ActionState.HITSTUN
+		logic_state = ActionState.HITSTUN
 		_cancel_window_open = false
 		followup_window_active = false
 		_lock_action()
@@ -416,18 +462,23 @@ func _update_action_state_from_timeline(animation_name: String, phase_name: Stri
 
 	if animation_name == "run_forward" or animation_name == "run_backward":
 		return
+	if String(current_animation_action).to_lower().find("jump") != -1:
+		return
 
 	if phase_name == "STARTUP":
 		action_state = ActionState.ATTACK_STARTUP
+		logic_state = ActionState.ATTACK_STARTUP
 		_cancel_window_open = false
 		followup_window_active = false
 		_lock_action()
 	elif phase_name == "ACTIVE" or phase_name == "IMPACT":
 		action_state = ActionState.ATTACK_ACTIVE
+		logic_state = ActionState.ATTACK_ACTIVE
 		_cancel_window_open = false
 		_lock_action()
 	elif phase_name == "RECOVERY":
 		action_state = ActionState.ATTACK_RECOVERY
+		logic_state = ActionState.ATTACK_RECOVERY
 		_cancel_window_open = phase_progress >= cancel_window_progress
 		if _cancel_window_open:
 			_unlock_action()
@@ -444,22 +495,11 @@ func _hold_block_frame() -> void:
 	if animated_sprite == null or animated_sprite.sprite_frames == null or not animated_sprite.sprite_frames.has_animation("block"):
 		return
 	action_state = ActionState.BLOCK_HOLD
+	logic_state = ActionState.BLOCK_HOLD
 	_lock_action()
 	var last_frame := animated_sprite.sprite_frames.get_frame_count("block") - 1
 	animated_sprite.frame = clampi(block_hold_frame, 0, last_frame)
 	animated_sprite.pause()
-
-func _configure_attack_hitbox(animation_name: String) -> void:
-	var profile: Dictionary = HITBOX_PROFILES.get(animation_name, HITBOX_PROFILES["light_punch"])
-	attack_hitbox.position = profile["position"]
-	var shape := attack_hitbox_shape.shape as RectangleShape2D
-	if shape != null:
-		shape.size = profile["size"]
-
-func _set_attack_hitbox_active(active: bool) -> void:
-	attack_hitbox.visible = active
-	if attack_hitbox_shape != null:
-		attack_hitbox_shape.disabled = not active
 
 func _animation_fps(animation_name: String) -> float:
 	if animated_sprite != null and animated_sprite.sprite_frames != null and animated_sprite.sprite_frames.has_animation(animation_name):
@@ -467,7 +507,13 @@ func _animation_fps(animation_name: String) -> float:
 	return float(Manifest.FPS)
 
 func _action_state_name() -> String:
-	match action_state:
+	return _state_name_for_action_state(action_state)
+
+func _logic_state_name() -> String:
+	return _state_name_for_action_state(logic_state)
+
+func _state_name_for_action_state(state_value: int) -> String:
+	match state_value:
 		ActionState.ATTACK_STARTUP:
 			return "ATTACK_STARTUP"
 		ActionState.ATTACK_ACTIVE:
@@ -484,3 +530,18 @@ func _action_state_name() -> String:
 			return "HITSTUN"
 		_:
 			return "NEUTRAL"
+
+func _visual_action_in_progress() -> bool:
+	return _visual_return_pending and renka_state == RenkaState.ATTACKING and animated_sprite != null and animated_sprite.is_playing()
+
+func _locomotion_visual_locked() -> bool:
+	if _visual_action_in_progress() or crouching:
+		return true
+	return action_state == ActionState.ATTACK_STARTUP \
+		or action_state == ActionState.ATTACK_ACTIVE \
+		or action_state == ActionState.ATTACK_RECOVERY \
+		or action_state == ActionState.BLOCK_START \
+		or action_state == ActionState.BLOCK_HOLD \
+		or action_state == ActionState.BLOCK_RECOVERY \
+		or action_state == ActionState.HITSTUN \
+		or logic_state == ActionState.HITSTUN

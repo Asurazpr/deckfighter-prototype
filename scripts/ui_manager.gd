@@ -167,6 +167,10 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		KEY_F5:
 			_export_combat_log()
 			get_viewport().set_input_as_handled()
+		KEY_F6:
+			if combat_manager != null and combat_manager.has_method("toggle_hitbox_calibration"):
+				combat_manager.toggle_hitbox_calibration()
+				get_viewport().set_input_as_handled()
 
 func _remove_space_from_ui_accept() -> void:
 	if not InputMap.has_action("ui_accept"):
