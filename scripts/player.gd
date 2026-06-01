@@ -257,6 +257,13 @@ func set_free_movement_enabled(enabled: bool) -> void:
 	if not enabled:
 		velocity.x = 0.0
 
+func reset_for_round_start() -> void:
+	velocity = Vector2.ZERO
+	crouching = false
+	_apply_crouch_hurtbox(false)
+	clear_timeline_visual()
+	_set_state("READY")
+
 func is_crouching() -> bool:
 	return crouching
 

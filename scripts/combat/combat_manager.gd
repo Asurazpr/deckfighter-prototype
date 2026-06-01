@@ -190,6 +190,7 @@ func _begin_combat() -> void:
 func start_fight() -> void:
 	if fight_started or combat_over:
 		return
+	_reset_round_start_from_scene()
 	fight_started = true
 	_transition_combat_state(CombatStateMachineScript.State.SLOW_NEUTRAL, "start fight")
 	_enter_slow_neutral("Slow neutral movement started.")
@@ -198,6 +199,18 @@ func start_fight() -> void:
 
 func is_fight_started() -> bool:
 	return fight_started
+
+func set_enemy_intent_ui_visible(visible: bool) -> void:
+	if enemy != null and enemy.has_method("set_intent_ui_visible"):
+		enemy.set_intent_ui_visible(visible)
+
+func refresh_actor_facing() -> void:
+	_update_actor_facing()
+
+func _reset_round_start_from_scene() -> void:
+	var scene := get_tree().current_scene
+	if scene != null and scene.has_method("reset_round_start_positions"):
+		scene.reset_round_start_positions()
 
 func _log_architecture_validation() -> void:
 	var active_path: String = get_script().resource_path

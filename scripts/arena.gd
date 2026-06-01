@@ -9,12 +9,12 @@ extends Node2D
 @export var arena_top_y := 120.0
 @export var arena_bottom_y := 820.0
 @export var camera_baseline_y := 560.0
-@export var camera_distance_padding := 700.0
-@export var camera_jump_vertical_padding := 210.0
+@export var camera_distance_padding := 1120.0
+@export var camera_jump_vertical_padding := 260.0
 @export var camera_jump_pan_strength := 0.35
 @export var camera_jump_zoom_out_strength := 0.7
-@export var min_visible_width_ratio := 0.50
-@export var max_visible_width_ratio := 0.75
+@export var min_visible_width_ratio := 0.80
+@export var max_visible_width_ratio := 1.00
 @export var camera_position_lerp_speed := 8.0
 @export var camera_zoom_lerp_speed := 6.0
 @export var camera_debug_enabled := false
@@ -31,8 +31,12 @@ var left_wall_debug: Line2D
 var right_wall_debug: Line2D
 var fight_camera: Camera2D
 var camera_debug_timer := 0.0
+var player_round_start_y := 0.0
+var enemy_round_start_y := 0.0
 
 func _ready() -> void:
+	player_round_start_y = player.global_position.y
+	enemy_round_start_y = enemy.global_position.y
 	_apply_round_start_positions()
 	_apply_combat_arena_bounds()
 	_create_center_axis_debug()
@@ -46,8 +50,27 @@ func _process(delta: float) -> void:
 
 func _apply_round_start_positions() -> void:
 	var spawn_gap := desired_start_distance * 0.5
-	player.global_position.x = stage_center_x - spawn_gap
-	enemy.global_position.x = stage_center_x + spawn_gap
+	player.global_position = Vector2(stage_center_x - spawn_gap, player_round_start_y)
+	enemy.global_position = Vector2(stage_center_x + spawn_gap, enemy_round_start_y)
+
+func reset_round_start_positions() -> void:
+	_apply_round_start_positions()
+	_reset_actor_for_round_start(player)
+	_reset_actor_for_round_start(enemy)
+	_apply_combat_arena_bounds()
+	if combat_manager != null and combat_manager.has_method("refresh_actor_facing"):
+		combat_manager.refresh_actor_facing()
+	_snap_fight_camera_to_target()
+
+func _reset_actor_for_round_start(actor: Node) -> void:
+	if actor == null:
+		return
+	if actor.has_method("reset_for_round_start"):
+		actor.reset_for_round_start()
+	elif actor is CharacterBody2D:
+		(actor as CharacterBody2D).velocity = Vector2.ZERO
+	if actor.has_method("clear_timeline_visual"):
+		actor.clear_timeline_visual()
 
 func _create_center_axis_debug() -> void:
 	var axis := Line2D.new()
@@ -81,6 +104,14 @@ func _create_fight_camera() -> void:
 	fight_camera.enabled = true
 	add_child(fight_camera)
 	fight_camera.make_current()
+	var camera_target := _calculate_camera_target()
+	fight_camera.global_position = camera_target["position"]
+	var target_zoom := float(camera_target["zoom"])
+	fight_camera.zoom = Vector2(target_zoom, target_zoom)
+
+func _snap_fight_camera_to_target() -> void:
+	if fight_camera == null:
+		return
 	var camera_target := _calculate_camera_target()
 	fight_camera.global_position = camera_target["position"]
 	var target_zoom := float(camera_target["zoom"])

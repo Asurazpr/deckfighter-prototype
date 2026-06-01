@@ -67,8 +67,7 @@ func start_attack(attack_id := "") -> void:
 		return
 	var attack := get_attacks().get(current_attack, {}) as Dictionary
 	var hit_level := String(attack.get("hit_level", current_attack))
-	telegraph_label.text = "%s\n%s" % [String(attack.get("name", current_attack)).to_upper(), hit_level]
-	telegraph_label.modulate = _attack_color(hit_level)
+	_set_telegraph_text("%s\n%s" % [String(attack.get("name", current_attack)).to_upper(), hit_level], "ENEMY ATTACK", _attack_color(hit_level), Color.WHITE)
 
 func take_hit(damage: int, stance_damage: int) -> void:
 	super.take_hit(damage, stance_damage)
@@ -87,8 +86,12 @@ func show_timeline_phase(action_name: String, phase_name: String, phase_progress
 	var animation_name := _animation_for_timeline(action_name, current_animation_hit_level)
 	_play_kai_animation(animation_name, phase_name, phase_progress)
 	var marker_text := _current_attack_label(action_name)
-	telegraph_label.text = "%s %s" % [marker_text, phase_name]
-	telegraph_label.modulate = _attack_color(current_animation_hit_level)
+	_set_telegraph_text(
+		"%s %s" % [marker_text, phase_name],
+		"ENEMY ATTACK %s" % phase_name,
+		_attack_color(current_animation_hit_level),
+		Color(1.0, 0.86, 0.56)
+	)
 
 func clear_timeline_visual() -> void:
 	super.clear_timeline_visual()

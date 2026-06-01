@@ -60,6 +60,7 @@ var debug_panels_visible := false
 var enemy_ai_visible := true
 var timing_visible := true
 var combat_log_visible := false
+var readability_mode_enabled := false
 var combat_debug_exporter = CombatDebugExporterScript.new()
 
 func _ready() -> void:
@@ -162,6 +163,11 @@ func _on_hand_changed(hand: Array) -> void:
 func _unhandled_key_input(event: InputEvent) -> void:
 	var key_event := event as InputEventKey
 	if key_event == null or not key_event.pressed or key_event.echo:
+		return
+
+	if key_event.ctrl_pressed and key_event.keycode == KEY_F1:
+		_toggle_readability_mode()
+		get_viewport().set_input_as_handled()
 		return
 
 	match key_event.keycode:
@@ -328,9 +334,9 @@ func _build_debug_panels() -> void:
 	root.add_child(start_fight_button)
 
 	debug_hint_label = Label.new()
-	debug_hint_label.position = Vector2(1138, 130)
-	debug_hint_label.size = Vector2(306, 24)
-	debug_hint_label.text = "F1 Debug  F4 Log  F5 Export  F6 Boxes  F7 Cam"
+	debug_hint_label.position = Vector2(934, 130)
+	debug_hint_label.size = Vector2(510, 24)
+	debug_hint_label.text = "F1 Debug  Ctrl+F1 Readability  F4 Log  F5 Export  F6 Boxes  F7 Cam"
 	debug_hint_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	debug_hint_label.add_theme_font_size_override("font_size", 12)
 	debug_hint_label.add_theme_color_override("font_color", Color(0.72, 0.78, 0.84, 0.82))
@@ -526,11 +532,12 @@ func _refresh_impact_bar() -> void:
 		return
 	var hit_level := String(data.get("hit_level", "None"))
 	var hit_color := _hit_level_color(hit_level)
-	impact_label.text = "%s INCOMING\n%s" % [hit_level, _reaction_instruction(hit_level)]
-	impact_label.add_theme_color_override("font_color", hit_color)
+	var display_color := Color(1.0, 0.72, 0.24) if readability_mode_enabled else hit_color
+	impact_label.text = "INCOMING\nREACT" if readability_mode_enabled else "%s INCOMING\n%s" % [hit_level, _reaction_instruction(hit_level)]
+	impact_label.add_theme_color_override("font_color", display_color)
 	var progress := clampf(float(data.get("progress", 0.0)), 0.0, 1.0)
 	impact_bar.value = (1.0 - progress) * 100.0
-	_style_progress_bar(impact_bar, Color(1.0, 0.34, 0.22) if progress >= 0.8 else hit_color)
+	_style_progress_bar(impact_bar, Color(1.0, 0.34, 0.22) if progress >= 0.8 else display_color)
 
 func _on_card_pressed(index: int) -> void:
 	_try_play_card(index)
@@ -573,6 +580,14 @@ func _refresh_card_enabled_state() -> void:
 		card_buttons[i].modulate = _prediction_color_for_card(i)
 		_apply_card_button_style(card_buttons[i], i)
 
+func _toggle_readability_mode() -> void:
+	readability_mode_enabled = not readability_mode_enabled
+	if combat_manager != null and combat_manager.has_method("set_enemy_intent_ui_visible"):
+		combat_manager.set_enemy_intent_ui_visible(not readability_mode_enabled)
+	if deck_manager_ref != null and "hand" in deck_manager_ref:
+		_on_hand_changed(deck_manager_ref.hand)
+	_on_log_message("Debug Readability Mode %s." % ("ON" if readability_mode_enabled else "OFF"))
+
 func _prediction_color_for_card(index: int) -> Color:
 	if combat_manager == null or not combat_manager.has_method("get_card_prediction"):
 		return Color.WHITE
@@ -580,6 +595,18 @@ func _prediction_color_for_card(index: int) -> Color:
 	return PREDICTION_COLORS.get(prediction, Color.WHITE)
 
 func _format_card_text(card: Resource, index: int) -> String:
+	if readability_mode_enabled:
+		return "%d  %s\nDMG %d | ST %d\nStart %df | Hit +%d\nWhiff %s%d | Next: %s" % [
+			index + 1,
+			card.display_name,
+			card.damage,
+			card.stance_damage,
+			card.startup_frame,
+			card.frame_gain,
+			"+" if int(card.whiff_frame_penalty) >= 0 else "",
+			card.whiff_frame_penalty,
+			_short_route_text(deck_manager_ref.get_follow_up_tags(card))
+		]
 	return "%d  %s\n%s | DMG %d | ST %d\nStart %df | Hit +%d\nWhiff %s%d | Next: %s" % [
 		index + 1,
 		card.display_name,
