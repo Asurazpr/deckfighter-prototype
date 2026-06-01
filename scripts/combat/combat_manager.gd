@@ -22,6 +22,7 @@ const MovementSystemScript := preload("res://scripts/combat/movement_system.gd")
 const HitboxSystemScript := preload("res://scripts/combat/hitbox_system.gd")
 const TradeSystemScript := preload("res://scripts/combat/trade_system.gd")
 const StanceSystemScript := preload("res://scripts/combat/stance_system.gd")
+const StanceDamageResolverScript := preload("res://scripts/combat/stance_damage_resolver.gd")
 const EnemyAISystemScript := preload("res://scripts/combat/enemy_ai_system.gd")
 const CombatTimelineScript := preload("res://scripts/combat/combat_timeline.gd")
 const ReactionWindowSystemScript := preload("res://scripts/combat/reaction_window_system.gd")
@@ -39,7 +40,7 @@ const DEBUG_ATTACK_HITBOX_LIFETIME := 0.25
 @export var stance_break_frame_bonus := 6
 @export var max_duel_distance := 260.0
 @export var min_duel_distance := 55.0
-@export var show_debug_hitboxes := true
+@export var show_debug_hitboxes := false
 @export var show_hitbox_calibration := false
 @export var show_sprite_bounds_debug := false
 @export var enable_hitbox_trace_log := true
@@ -54,7 +55,11 @@ const DEBUG_ATTACK_HITBOX_LIFETIME := 0.25
 @export var live_neutral_player_speed := 140.0
 @export var live_neutral_enemy_speed := 70.0
 @export var reaction_player_move_speed := 180.0
-@export var reaction_jump_hurtbox_lift := 45.0
+@export var reaction_jump_horizontal_speed := 620.0
+@export var reaction_jump_hurtbox_lift := 220.0
+@export var arena_left_x := 0.0
+@export var arena_right_x := 1600.0
+@export var arena_wall_margin := 90.0
 @export var enemy_intent_range := 95.0
 @export var slow_neutral_intent_delay := 1.2
 @export var defensive_reaction_wait_frames := 20
@@ -96,6 +101,7 @@ var movement_system
 var hitbox_system
 var trade_system
 var stance_system
+var stance_damage_resolver
 var enemy_ai_system
 var combat_timeline
 var reaction_window_system
@@ -144,7 +150,7 @@ func _ready() -> void:
 
 func _setup_combat_systems() -> void:
 	combat_clock = CombatClockScript.new()
-	combat_clock.setup(self, enemy)
+	combat_clock.setup(self, player, enemy)
 	frame_system = FrameSystemScript.new()
 	frame_system.setup(self, enemy)
 	queue_resolver = QueueResolverScript.new()
@@ -152,13 +158,14 @@ func _setup_combat_systems() -> void:
 	route_system = RouteSystemScript.new()
 	route_system.setup(self, deck_manager)
 	movement_system = MovementSystemScript.new()
-	movement_system.setup(self, player, enemy, max_duel_distance, min_duel_distance)
+	movement_system.setup(self, player, enemy, max_duel_distance, min_duel_distance, arena_left_x, arena_right_x, arena_wall_margin)
 	hitbox_system = HitboxSystemScript.new()
 	hitbox_system.setup(self, player, enemy, movement_system)
 	trade_system = TradeSystemScript.new()
 	trade_system.setup(self, trade_player_recovery_frames, trade_enemy_recovery_frames)
 	stance_system = StanceSystemScript.new()
 	stance_system.setup(enemy)
+	stance_damage_resolver = StanceDamageResolverScript.new()
 	enemy_ai_system = EnemyAISystemScript.new()
 	enemy_ai_system.setup(self, enemy, frame_system)
 	combat_timeline = CombatTimelineScript.new()
@@ -183,6 +190,7 @@ func _begin_combat() -> void:
 func start_fight() -> void:
 	if fight_started or combat_over:
 		return
+	_reset_round_start_from_scene()
 	fight_started = true
 	_transition_combat_state(CombatStateMachineScript.State.SLOW_NEUTRAL, "start fight")
 	_enter_slow_neutral("Slow neutral movement started.")
@@ -192,11 +200,23 @@ func start_fight() -> void:
 func is_fight_started() -> bool:
 	return fight_started
 
+func set_enemy_intent_ui_visible(visible: bool) -> void:
+	if enemy != null and enemy.has_method("set_intent_ui_visible"):
+		enemy.set_intent_ui_visible(visible)
+
+func refresh_actor_facing() -> void:
+	_update_actor_facing()
+
+func _reset_round_start_from_scene() -> void:
+	var scene := get_tree().current_scene
+	if scene != null and scene.has_method("reset_round_start_positions"):
+		scene.reset_round_start_positions()
+
 func _log_architecture_validation() -> void:
 	var active_path: String = get_script().resource_path
 	var legacy_present := ResourceLoader.exists("res://scripts/combat_manager.gd")
 	log_message.emit("Active combat manager: %s (CombatManagerCore)." % active_path)
-	log_message.emit("Loaded combat systems: CombatClock, CombatTimeline, FrameSystem, QueueResolver, RouteSystem, MovementSystem, MovementFlowSystem, HitboxSystem, TradeSystem, StanceSystem, EnemyAISystem, ReactionWindowSystem, CombatStateMachine, CombatInputRouter.")
+	log_message.emit("Loaded combat systems: CombatClock, CombatTimeline, FrameSystem, QueueResolver, RouteSystem, MovementSystem, MovementFlowSystem, HitboxSystem, TradeSystem, StanceSystem, StanceDamageResolver, EnemyAISystem, ReactionWindowSystem, CombatStateMachine, CombatInputRouter.")
 	log_message.emit("Legacy combat manager present: %s." % str(legacy_present))
 
 func _process(_delta: float) -> void:
@@ -207,7 +227,8 @@ func _process(_delta: float) -> void:
 	_repair_invalid_combat_state()
 	_tick_trade_recovery(_delta)
 	_execute_ready_queue_after_movement()
-	_clamp_duel_distance()
+	_clamp_duel_for_current_motion()
+	_update_actor_facing()
 	_tick_debug_hitboxes(_delta)
 	_tick_reaction_window(_delta)
 	_tick_slow_neutral(_delta)
@@ -1185,7 +1206,7 @@ func _resolve_enemy_impact_after_countdown(defense_type: String) -> void:
 			_change_frame_advantage(1)
 		else:
 			hitbox_system.trace_last_check("hit")
-			player.take_damage(result["damage"])
+			_apply_player_damage_and_stance(result, StanceDamageResolver.RAW_HIT, -1, "wait_raw_hit")
 			_set_frame_advantage_to_neutral()
 			log_message.emit("Wait failed: enemy was in range.")
 	elif not enemy_attack_hits or _enemy_attack_whiffs_against_defense(defense_type, result):
@@ -1195,12 +1216,13 @@ func _resolve_enemy_impact_after_countdown(defense_type: String) -> void:
 		_change_frame_advantage(1)
 	elif _defense_answers_attack(defense_type, result):
 		hitbox_system.trace_last_check("block")
+		_apply_player_block_stance_damage(result, StanceDamageResolver.NORMAL_BLOCK, "normal_defense_block")
 		_reset_pressure_sequence()
 		_change_frame_advantage(2)
 		log_message.emit("Normal defense success.")
 	else:
 		hitbox_system.trace_last_check("hit")
-		player.take_damage(result["damage"])
+		_apply_player_damage_and_stance(result, StanceDamageResolver.RAW_HIT, -1, "defense_failed_raw_hit")
 		_set_frame_advantage_to_neutral()
 		log_message.emit("Defense failed.")
 
@@ -1222,31 +1244,31 @@ func _resolve_block_after_startup(defense_type: String, startup_after_block: int
 		_change_frame_advantage(1)
 	elif startup_after_block < 0:
 		hitbox_system.trace_last_check("hit")
-		player.take_damage(result["counter_damage"])
+		_apply_player_damage_and_stance(result, StanceDamageResolver.COUNTER_HIT, int(result["counter_damage"]), "late_block_counter_hit")
 		_set_frame_advantage_to_neutral()
 		log_message.emit("Defense failed: too late.")
 	elif _defense_answers_attack(defense_type, result):
 		if startup_after_block <= perfect_block_window_frames:
 			hitbox_system.trace_last_check("perfect_block")
+			_apply_player_block_stance_damage(result, StanceDamageResolver.PERFECT_BLOCK, "perfect_block_defense")
 			_reset_pressure_sequence()
 			_change_frame_advantage(4)
 			var stance_protected := _apply_block_stance_damage(15, "perfect_block")
 			log_message.emit("Perfect block window hit.")
 			log_message.emit("PERFECT BLOCK")
-			if not stance_protected:
-				log_message.emit("Stance damage dealt: 15.")
-			else:
+			if stance_protected:
 				log_message.emit("Perfect block dealt no stance damage due to protection.")
 			player.show_state("PERFECT BLOCK", Color.GOLD)
 			await _run_perfect_block_hitstop()
 		else:
 			hitbox_system.trace_last_check("block")
+			_apply_player_block_stance_damage(result, StanceDamageResolver.NORMAL_BLOCK, "normal_block")
 			_reset_pressure_sequence()
 			_change_frame_advantage(2)
 			log_message.emit("Normal block: too early for perfect.")
 	else:
 		hitbox_system.trace_last_check("hit")
-		player.take_damage(result["damage"])
+		_apply_player_damage_and_stance(result, StanceDamageResolver.RAW_HIT, -1, "block_failed_raw_hit")
 		_set_frame_advantage_to_neutral()
 		log_message.emit("Defense failed.")
 
@@ -1271,7 +1293,7 @@ func _resolve_reaction_no_defense() -> void:
 		_change_frame_advantage(1)
 	else:
 		hitbox_system.trace_last_check("hit")
-		player.take_damage(result["damage"])
+		_apply_player_damage_and_stance(result, StanceDamageResolver.RAW_HIT, -1, "reaction_no_defense_hit")
 		_set_frame_advantage_to_neutral()
 		log_message.emit("Impact resolved: hit.")
 		reaction_window_system.set_impact_resolution("Hit")
@@ -1300,14 +1322,13 @@ func _resolve_reaction_block(defense_type: String, input_progress: float) -> voi
 	elif _defense_answers_attack(defense_type, result):
 		if input_progress >= PERFECT_BLOCK_REACTION_PROGRESS:
 			hitbox_system.trace_last_check("perfect_block")
+			_apply_player_block_stance_damage(result, StanceDamageResolver.PERFECT_BLOCK, "reaction_perfect_block_defense")
 			_reset_pressure_sequence()
 			_change_frame_advantage(4)
 			var stance_protected := _apply_block_stance_damage(15, "perfect_block")
 			log_message.emit("Perfect block window hit.")
 			log_message.emit("PERFECT BLOCK")
-			if not stance_protected:
-				log_message.emit("Stance damage dealt: 15.")
-			else:
+			if stance_protected:
 				log_message.emit("Perfect block dealt no stance damage due to protection.")
 			log_message.emit("Impact resolved: perfect block.")
 			reaction_window_system.set_impact_resolution("Perfect Block")
@@ -1315,6 +1336,7 @@ func _resolve_reaction_block(defense_type: String, input_progress: float) -> voi
 			await _run_perfect_block_hitstop()
 		else:
 			hitbox_system.trace_last_check("block")
+			_apply_player_block_stance_damage(result, StanceDamageResolver.NORMAL_BLOCK, "reaction_normal_block")
 			_reset_pressure_sequence()
 			_change_frame_advantage(2)
 			log_message.emit("Normal block: too early for perfect.")
@@ -1324,7 +1346,7 @@ func _resolve_reaction_block(defense_type: String, input_progress: float) -> voi
 		hitbox_system.trace_last_check("hit")
 		if String(result["type"]) == "LOW" and reaction_window_system.jump_started and not reaction_window_system.jump_active:
 			log_message.emit("Jump too late; sweep hit.")
-		player.take_damage(result["damage"])
+		_apply_player_damage_and_stance(result, StanceDamageResolver.RAW_HIT, -1, "reaction_failed_raw_hit")
 		_set_frame_advantage_to_neutral()
 		log_message.emit("Defense failed.")
 		log_message.emit("Impact resolved: hit.")
@@ -1668,7 +1690,7 @@ func _resolve_intent_trade(index: int, preview_card: Resource, enemy_startup_aft
 	_complete_player_card_timeline(preview_card)
 	if enemy_attack_hits:
 		hitbox_system.trace_last_check("trade")
-		player.take_damage(result["damage"])
+		_apply_player_damage_and_stance(result, StanceDamageResolver.RAW_HIT, -1, "trade_enemy_hit")
 	else:
 		hitbox_system.trace_last_check("whiff")
 		log_message.emit("Enemy trade hitbox had no overlap.")
@@ -1702,7 +1724,7 @@ func _resolve_intent_trade_snapshot(snapshot: Dictionary, preview_card: Resource
 	_complete_player_card_timeline(preview_card)
 	if enemy_attack_hits:
 		hitbox_system.trace_last_check("trade")
-		player.take_damage(result["damage"])
+		_apply_player_damage_and_stance(result, StanceDamageResolver.RAW_HIT, -1, "trade_snapshot_enemy_hit")
 	else:
 		hitbox_system.trace_last_check("whiff")
 		log_message.emit("Enemy trade hitbox had no overlap.")
@@ -1740,7 +1762,7 @@ func _resolve_enemy_counter_hit(counter_hit := true) -> void:
 		_change_frame_advantage(1)
 	else:
 		hitbox_system.trace_last_check("hit")
-		player.take_damage(damage if counter_hit else int(result["damage"]))
+		_apply_player_damage_and_stance(result, StanceDamageResolver.COUNTER_HIT if counter_hit else StanceDamageResolver.RAW_HIT, damage if counter_hit else int(result["damage"]), "challenge_counter_hit" if counter_hit else "challenge_raw_hit")
 		_set_frame_advantage_to_neutral()
 		log_message.emit("Defense failed.")
 	enemy.finish_attack()
@@ -1970,7 +1992,10 @@ func _resolve_negative_pressure(final_frame_advantage: int) -> void:
 		punish_in_progress = true
 		_transition_combat_state(CombatStateMachineScript.State.PUNISH, "enemy punish")
 		enemy.perform_punish_combo()
-		player.take_damage(enemy.punish_damage)
+		_apply_player_damage_and_stance({
+			"damage": enemy.punish_damage,
+			"stance_damage": int(enemy.get("punish_stance_damage"))
+		}, StanceDamageResolver.RAW_HIT, enemy.punish_damage, "enemy_punish")
 		punish_in_progress = false
 		end_player_pressure("", 0)
 		return
@@ -2063,9 +2088,17 @@ func get_enemy_hitbox_phase() -> String:
 	return hitbox_system.enemy_debug_phase()
 
 func toggle_hitbox_calibration() -> void:
-	show_hitbox_calibration = not show_hitbox_calibration
-	show_sprite_bounds_debug = show_hitbox_calibration
-	log_message.emit("Hitbox calibration overlay %s." % ("enabled" if show_hitbox_calibration else "disabled"))
+	toggle_combat_geometry_debug()
+
+func toggle_combat_geometry_debug() -> void:
+	set_combat_geometry_debug_visible(not show_debug_hitboxes)
+
+func set_combat_geometry_debug_visible(visible: bool, log_change := true) -> void:
+	show_debug_hitboxes = visible
+	show_hitbox_calibration = visible
+	show_sprite_bounds_debug = visible
+	if log_change:
+		log_message.emit("Combat geometry debug %s." % ("enabled" if visible else "disabled"))
 
 func _make_card_hitbox(card: Resource) -> Rect2:
 	return hitbox_system.card_hitbox(card)
@@ -2202,8 +2235,42 @@ func _apply_timeline_visual() -> void:
 func _clamp_duel_distance() -> void:
 	movement_system.clamp_duel_distance()
 
+func _clamp_duel_max_distance() -> void:
+	movement_system.clamp_duel_max_distance()
+
 func _clamped_player_x(player_x: float) -> float:
 	return movement_system.clamped_player_x(player_x)
+
+func _clamp_duel_for_current_motion() -> void:
+	if _player_airborne_movement_active():
+		_clamp_duel_max_distance()
+	else:
+		_clamp_duel_distance()
+
+func _player_airborne_movement_active() -> bool:
+	if reaction_jump_motion_active:
+		return true
+	if movement_flow_system != null and movement_flow_system.has_method("player_jump_active"):
+		return movement_flow_system.player_jump_active()
+	return false
+
+func set_arena_bounds(left_bound: float, right_bound: float, wall_margin: float) -> void:
+	arena_left_x = left_bound
+	arena_right_x = right_bound
+	arena_wall_margin = wall_margin
+	if movement_system != null and movement_system.has_method("set_arena_bounds"):
+		movement_system.set_arena_bounds(arena_left_x, arena_right_x, arena_wall_margin)
+		movement_system.clamp_arena_bounds()
+		movement_system.update_facing()
+
+func _update_actor_facing() -> void:
+	if movement_system != null and movement_system.has_method("update_facing"):
+		movement_system.update_facing()
+
+func is_screen_direction_toward_enemy(direction: float) -> bool:
+	if movement_system == null or direction == 0.0:
+		return false
+	return signf(direction) == signf(movement_system.direction_to_enemy())
 
 func _apply_intent_action_movement(action: String) -> void:
 	movement_system.apply_intent_action_movement(action)
@@ -2244,9 +2311,9 @@ func apply_reaction_jump_movement(direction: float, real_delta: float, lift_prog
 	if not reaction_jump_motion_active:
 		start_reaction_jump_movement()
 	var scaled_delta := real_delta * _reaction_movement_time_scale()
-	player.global_position.x += clampf(direction, -1.0, 1.0) * reaction_player_move_speed * scaled_delta
+	player.global_position.x += clampf(direction, -1.0, 1.0) * reaction_jump_horizontal_speed * scaled_delta
 	player.global_position.y = reaction_jump_ground_y - reaction_jump_hurtbox_lift * clampf(lift_progress, 0.0, 1.0)
-	_clamp_duel_distance()
+	_clamp_duel_max_distance()
 
 func finish_reaction_jump_movement() -> void:
 	if not reaction_jump_motion_active or player == null:
@@ -2446,49 +2513,58 @@ func _log_stance_protection(amount: int) -> void:
 	if stance_system.should_log_protected_damage(amount):
 		log_message.emit("Stance protected: ignored %d stance damage." % amount)
 
-func _apply_hit_stance_damage(card: Resource, event_source := "card_hit") -> bool:
-	var before := int(enemy.stance)
-	var protected: bool = stance_system.should_log_protected_damage(card.stance_damage)
-	_log_stance_protection(card.stance_damage)
-	stance_system.apply_hit(card.damage, card.stance_damage)
-	var after := int(enemy.stance)
-	var applied: int = 0 if protected else card.stance_damage
+func _apply_player_damage_and_stance(attack_result: Dictionary, hit_result: String, damage_override := -1, event_source := "enemy_attack") -> Dictionary:
+	var damage := damage_override if damage_override >= 0 else int(attack_result.get("damage", 0))
+	player.take_damage(damage)
+	return _apply_stance_damage_to_actor(player, int(attack_result.get("stance_damage", 0)), hit_result, event_source)
+
+func _apply_player_block_stance_damage(attack_result: Dictionary, hit_result: String, event_source := "enemy_block") -> Dictionary:
+	return _apply_stance_damage_to_actor(player, int(attack_result.get("stance_damage", 0)), hit_result, event_source)
+
+func _apply_stance_damage_to_actor(defender: Node, base_stance_damage: int, hit_result: String, event_source := "stance_damage") -> Dictionary:
+	if stance_damage_resolver == null:
+		return {}
+	var result: Dictionary = stance_damage_resolver.apply_stance_damage(defender, base_stance_damage, hit_result)
+	_log_stance_damage_result(result)
 	_record_combat_event("stance_update", "", {
 		"source": event_source,
-		"stance_before": before,
-		"stance_after": after,
-		"stance_damage_attempted": card.stance_damage,
-		"stance_damage_applied": applied,
-		"stance_protected": protected,
-		"stance_state": stance_system.state_name(),
-		"recovery_frames_remaining": stance_system.recovery_frames()
+		"defender": result.get("defender", "Unknown"),
+		"hit_result": result.get("hit_result", hit_result),
+		"stance_before": result.get("stance_before", 0),
+		"stance_after": result.get("stance_after", 0),
+		"stance_damage_attempted": result.get("stance_damage_attempted", 0),
+		"stance_damage_applied": result.get("stance_damage_applied", 0),
+		"stance_protected": result.get("stance_protected", false),
+		"stance_state": result.get("stance_state", "UNKNOWN"),
+		"recovery_frames_remaining": result.get("recovery_frames_remaining", 0)
 	})
-	return protected
+	return result
+
+func _log_stance_damage_result(result: Dictionary) -> void:
+	var base_damage := int(result.get("base_stance_damage", 0))
+	var attempted := int(result.get("stance_damage_attempted", 0))
+	var applied := int(result.get("stance_damage_applied", 0))
+	var hit_result := String(result.get("hit_result", "RAW_HIT"))
+	var defender_name := String(result.get("defender", "Defender"))
+	if base_damage <= 0 and attempted <= 0 and hit_result != "PERFECT_BLOCK":
+		return
+	if bool(result.get("stance_protected", false)) and attempted > 0:
+		log_message.emit("%s stance protected: ignored %d stance damage." % [defender_name, attempted])
+		return
+	log_message.emit("%s took %d stance damage: %s." % [defender_name, applied, hit_result])
+
+func _apply_hit_stance_damage(card: Resource, event_source := "card_hit") -> bool:
+	enemy.take_hit(card.damage, 0)
+	var result := _apply_stance_damage_to_actor(enemy, card.stance_damage, StanceDamageResolver.RAW_HIT, event_source)
+	return bool(result.get("stance_protected", false))
 
 func _apply_block_stance_damage(amount: int, event_source := "block") -> bool:
-	var before := int(enemy.stance)
-	var protected: bool = stance_system.should_log_protected_damage(amount)
-	_log_stance_protection(amount)
-	stance_system.apply_block_stance_damage(amount)
-	var after := int(enemy.stance)
-	_record_combat_event("stance_update", "", {
-		"source": event_source,
-		"stance_before": before,
-		"stance_after": after,
-		"stance_damage_attempted": amount,
-		"stance_damage_applied": 0 if protected else amount,
-		"stance_protected": protected,
-		"stance_state": stance_system.state_name(),
-		"recovery_frames_remaining": stance_system.recovery_frames()
-	})
-	return protected
+	var result := _apply_stance_damage_to_actor(enemy, amount, StanceDamageResolver.PERFECT_BLOCK_REWARD, event_source)
+	return bool(result.get("stance_protected", false))
 
 func _log_card_hit_summary(card: Resource, stance_protected: bool) -> void:
 	if card.stance_damage > 0 and stance_protected:
 		log_message.emit("%s hits for %d. No stance damage due to protection." % [card.display_name, card.damage])
-	elif card.stance_damage > 0:
-		log_message.emit("Stance damage dealt: %d." % card.stance_damage)
-		log_message.emit("%s hits for %d and deals %d stance." % [card.display_name, card.damage, card.stance_damage])
 	else:
 		log_message.emit("%s hits for %d." % [card.display_name, card.damage])
 
@@ -2868,6 +2944,10 @@ func can_accept_live_defense() -> bool:
 func can_accept_live_movement() -> bool:
 	return combat_state_machine != null and combat_state_machine.can_accept_live_movement()
 
+func request_live_neutral_jump() -> void:
+	if movement_flow_system != null and movement_flow_system.has_method("request_player_jump"):
+		movement_flow_system.request_player_jump()
+
 func get_queue_text() -> String:
 	return queue_resolver.queue_text()
 
@@ -3000,14 +3080,12 @@ func _queued_action_from_key(keycode: Key) -> Dictionary:
 		KEY_D:
 			return {"type": "STEP_FORWARD"}
 		KEY_L:
-			return {"type": "BACKSTEP"}
-		KEY_J:
-			return {"type": "BLOCK"}
+			return {"type": "CROUCH_BLOCK"} if Input.is_key_pressed(KEY_S) else {"type": "BLOCK"}
 		KEY_S:
-			if Input.is_key_pressed(KEY_J):
+			if Input.is_key_pressed(KEY_L):
 				return {"type": "CROUCH_BLOCK"}
 			return {}
-		KEY_SPACE:
+		KEY_W:
 			if Input.is_key_pressed(KEY_D):
 				return {"type": "JUMP_FORWARD"}
 			if Input.is_key_pressed(KEY_A):
@@ -3053,9 +3131,7 @@ func _pressure_movement_from_key(keycode: Key) -> String:
 			return "step_back"
 		KEY_D:
 			return "step_forward"
-		KEY_L:
-			return "backstep"
-		KEY_SPACE:
+		KEY_W:
 			return "jump"
 		_:
 			return ""
@@ -3135,11 +3211,9 @@ func _defense_display_name(defense_type: String) -> String:
 
 func _defense_from_key(keycode: Key) -> String:
 	match keycode:
-		KEY_J:
-			return "crouch_block" if Input.is_key_pressed(KEY_S) else "block"
 		KEY_L:
-			return "backstep"
-		KEY_SPACE:
+			return "crouch_block" if Input.is_key_pressed(KEY_S) else "block"
+		KEY_W:
 			return "jump"
 		KEY_U:
 			return "wait"

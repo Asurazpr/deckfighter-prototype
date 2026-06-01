@@ -28,6 +28,7 @@ const ATTACKS := EnemyMoveData.ATTACKS
 @export var punish_startup := 5
 @export var punish_range := 120.0
 @export var punish_damage := 18
+@export var punish_stance_damage := 12
 @export_enum("NORMAL", "ELITE", "BOSS") var intent_tier := "NORMAL"
 
 var hp := max_hp
@@ -47,6 +48,11 @@ var decision_state := DecisionState.NEUTRAL
 var last_decision_reason := "Ready."
 var last_action_score := 0.0
 var boss_phase_id := "phase_1"
+var intent_ui_visible := true
+var _telegraph_debug_text := "READY"
+var _telegraph_readability_text := "READY"
+var _telegraph_debug_color := Color.WHITE
+var _telegraph_readability_color := Color.WHITE
 
 @onready var body: ColorRect = $Body
 @onready var rig: Node = $Rig
@@ -64,6 +70,15 @@ func _ready() -> void:
 func can_act() -> bool:
 	return state == State.IDLE and stance_state == StanceState.NORMAL
 
+func reset_for_round_start() -> void:
+	if stance_state == StanceState.NORMAL:
+		_set_idle()
+	current_animation_action = "None"
+	current_animation_phase = "DONE"
+	current_animation_progress = 0.0
+	current_animation_hit_level = ""
+	current_animation_hitbox_active = false
+
 func get_attacks() -> Dictionary:
 	return ATTACKS
 
@@ -73,8 +88,7 @@ func start_attack(attack_id := "") -> void:
 	state = State.TELEGRAPH
 	var attacks := get_attacks()
 	current_attack = attack_id if attacks.has(attack_id) else _fallback_attack_id()
-	telegraph_label.text = current_attack
-	telegraph_label.modulate = _attack_color(current_attack)
+	_set_telegraph_text(current_attack, "ENEMY ATTACK", _attack_color(current_attack), Color.WHITE)
 	body.color = _attack_color(current_attack)
 	attack_telegraphed.emit(current_attack)
 
@@ -126,8 +140,7 @@ func clear_intent() -> void:
 func perform_punish_combo() -> int:
 	state = State.ATTACK
 	current_attack = "PUNISH"
-	telegraph_label.text = "PUNISH"
-	telegraph_label.modulate = Color.WHITE
+	_set_telegraph_text("PUNISH", "PUNISH", Color.WHITE, Color.WHITE)
 	body.color = Color.CRIMSON
 	await get_tree().create_timer(0.25, true, false, true).timeout
 	_set_idle()
@@ -174,8 +187,7 @@ func enter_break(from_block := false) -> void:
 	state = State.BREAK
 	stance_state = StanceState.BROKEN_BLOCKSTUN if from_block else StanceState.BROKEN_HITSTUN
 	current_attack = ""
-	telegraph_label.text = "BREAK"
-	telegraph_label.modulate = Color.ORANGE
+	_set_telegraph_text("BREAK", "BREAK", Color.ORANGE, Color.ORANGE)
 	body.color = Color.ORANGE
 	CombatAnimationDriver.drive_rig(rig, "stance_break", "IMPACT", 1.0, "", false)
 	var break_frames := STANCE_BREAK_BLOCK_RECOVERY_FRAMES if from_block else STANCE_BREAK_HITSTUN_FRAMES
@@ -195,7 +207,7 @@ func advance_stance_recovery_frames(frames: int) -> void:
 		remaining_frames -= spent_stun
 		if stance_break_stun_frames_remaining <= 0 and stance_state != StanceState.RECOVERING_PROTECTED:
 			stance_state = StanceState.RECOVERING_PROTECTED
-			telegraph_label.text = "PROTECTED"
+			_set_telegraph_text("PROTECTED", "PROTECTED", Color.ORANGE, Color.ORANGE)
 
 	if remaining_frames > 0 and stance_protection_frames_remaining > 0:
 		var spent_protection := mini(stance_protection_frames_remaining, remaining_frames)
@@ -280,8 +292,7 @@ func _set_idle() -> void:
 	state = State.IDLE
 	decision_state = DecisionState.NEUTRAL
 	current_attack = ""
-	telegraph_label.text = "READY"
-	telegraph_label.modulate = Color.WHITE
+	_set_telegraph_text("READY", "READY", Color.WHITE, Color.WHITE)
 	body.color = Color(1.0, 0.28, 0.22)
 	body.scale = Vector2.ONE
 	stance_break_bar.visible = false
@@ -307,8 +318,12 @@ func show_timeline_phase(action_name: String, phase_name: String, phase_progress
 		_:
 			body.scale = Vector2.ONE
 	var marker_text := current_attack if current_attack != "" else action_name.to_upper()
-	telegraph_label.text = "%s %s" % [marker_text, phase_name]
-	telegraph_label.modulate = _attack_color(current_attack if current_attack != "" else hit_level)
+	_set_telegraph_text(
+		"%s %s" % [marker_text, phase_name],
+		"ENEMY ATTACK %s" % phase_name,
+		_attack_color(current_attack if current_attack != "" else hit_level),
+		Color(1.0, 0.86, 0.56)
+	)
 
 func clear_timeline_visual() -> void:
 	if stance_state == StanceState.NORMAL:
@@ -320,6 +335,23 @@ func clear_timeline_visual() -> void:
 		current_animation_hit_level = ""
 		current_animation_hitbox_active = false
 		CombatAnimationDriver.clear(rig)
+
+func set_intent_ui_visible(visible: bool) -> void:
+	intent_ui_visible = visible
+	_refresh_telegraph_text()
+
+func _set_telegraph_text(debug_text: String, readability_text: String = "", debug_color: Color = Color.WHITE, readability_color: Color = Color.WHITE) -> void:
+	_telegraph_debug_text = debug_text
+	_telegraph_readability_text = readability_text if readability_text != "" else debug_text
+	_telegraph_debug_color = debug_color
+	_telegraph_readability_color = readability_color
+	_refresh_telegraph_text()
+
+func _refresh_telegraph_text() -> void:
+	if telegraph_label == null:
+		return
+	telegraph_label.text = _telegraph_debug_text if intent_ui_visible else _telegraph_readability_text
+	telegraph_label.modulate = _telegraph_debug_color if intent_ui_visible else _telegraph_readability_color
 
 func get_animation_debug() -> Dictionary:
 	return {

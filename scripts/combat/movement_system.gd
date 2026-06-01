@@ -6,13 +6,31 @@ var player: Node2D
 var enemy: Node2D
 var max_duel_distance := 260.0
 var min_duel_distance := 55.0
+var arena_left_x := 0.0
+var arena_right_x := 1600.0
+var arena_wall_margin := 90.0
 
-func setup(manager_ref: Node, player_ref: Node2D, enemy_ref: Node2D, max_distance: float, min_distance: float) -> void:
+func setup(
+	manager_ref: Node,
+	player_ref: Node2D,
+	enemy_ref: Node2D,
+	max_distance: float,
+	min_distance: float,
+	left_bound := 0.0,
+	right_bound := 1600.0,
+	wall_margin := 90.0
+) -> void:
 	manager = manager_ref
 	player = player_ref
 	enemy = enemy_ref
 	max_duel_distance = max_distance
 	min_duel_distance = min_distance
+	set_arena_bounds(left_bound, right_bound, wall_margin)
+
+func set_arena_bounds(left_bound: float, right_bound: float, wall_margin: float) -> void:
+	arena_left_x = left_bound
+	arena_right_x = right_bound
+	arena_wall_margin = maxf(0.0, wall_margin)
 
 func distance_between_fighters() -> float:
 	return absf(player.global_position.x - enemy.global_position.x)
@@ -32,6 +50,16 @@ func clamp_duel_distance() -> void:
 		player.global_position.x = enemy.global_position.x - max_duel_distance * direction
 	elif distance < min_duel_distance:
 		player.global_position.x = enemy.global_position.x - min_duel_distance * direction
+	clamp_arena_bounds()
+	update_facing()
+
+func clamp_duel_max_distance() -> void:
+	var direction := direction_to_enemy()
+	var distance := distance_between_fighters()
+	if distance > max_duel_distance:
+		player.global_position.x = enemy.global_position.x - max_duel_distance * direction
+	clamp_arena_bounds()
+	update_facing()
 
 func clamped_player_x(player_x: float) -> float:
 	var direction := signf(enemy.global_position.x - player_x)
@@ -39,10 +67,28 @@ func clamped_player_x(player_x: float) -> float:
 		direction = 1.0
 	var distance := absf(player_x - enemy.global_position.x)
 	if distance > max_duel_distance:
-		return enemy.global_position.x - max_duel_distance * direction
+		return clampf(enemy.global_position.x - max_duel_distance * direction, _left_wall_x(), _right_wall_x())
 	if distance < min_duel_distance:
-		return enemy.global_position.x - min_duel_distance * direction
-	return player_x
+		return clampf(enemy.global_position.x - min_duel_distance * direction, _left_wall_x(), _right_wall_x())
+	return clampf(player_x, _left_wall_x(), _right_wall_x())
+
+func clamp_arena_bounds() -> void:
+	if player != null:
+		player.global_position.x = clampf(player.global_position.x, _left_wall_x(), _right_wall_x())
+	if enemy != null:
+		enemy.global_position.x = clampf(enemy.global_position.x, _left_wall_x(), _right_wall_x())
+
+func update_facing() -> void:
+	if player != null and player.has_method("set_facing_direction"):
+		player.set_facing_direction(direction_to_enemy())
+	if enemy != null and enemy.has_method("set_facing_direction"):
+		enemy.set_facing_direction(direction_to_player())
+
+func _left_wall_x() -> float:
+	return arena_left_x + arena_wall_margin
+
+func _right_wall_x() -> float:
+	return arena_right_x - arena_wall_margin
 
 func action_startup(action: String) -> int:
 	match action:
@@ -98,12 +144,18 @@ func move_player_by_card(card: Resource) -> void:
 	if card.movement_delta == 0.0:
 		return
 	player.global_position.x += card.movement_delta * direction_to_enemy()
+	clamp_arena_bounds()
+	update_facing()
 
 func move_player_toward_enemy(amount: float) -> void:
 	player.global_position.x += amount * direction_to_enemy()
+	clamp_arena_bounds()
+	update_facing()
 
 func move_player_away_from_enemy(amount: float) -> void:
 	player.global_position.x -= amount * direction_to_enemy()
+	clamp_arena_bounds()
+	update_facing()
 
 func apply_card_spacing(card: Resource) -> void:
 	match card.id:
@@ -111,3 +163,5 @@ func apply_card_spacing(card: Resource) -> void:
 			pass
 		"ground_smash":
 			enemy.global_position.x += 180.0 * direction_to_enemy()
+	clamp_arena_bounds()
+	update_facing()

@@ -51,6 +51,11 @@ func _physics_process(delta: float) -> void:
 		return
 	_update_locomotion_animation()
 
+func reset_for_round_start() -> void:
+	force_finish_action()
+	super.reset_for_round_start()
+	_enter_renka_state(RenkaState.IDLE, "idle")
+
 func take_damage(amount: int) -> void:
 	if amount <= 0:
 		return
