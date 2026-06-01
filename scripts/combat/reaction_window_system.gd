@@ -232,7 +232,7 @@ func _update_live_guard(elapsed_startup_frames: int, real_delta: float, current_
 		player.show_timeline_phase(current_guard_input, "STARTUP", startup_progress, current_intent, false)
 
 func _current_live_guard_input() -> String:
-	if not Input.is_key_pressed(KEY_J):
+	if not Input.is_key_pressed(KEY_L):
 		return ""
 	return "crouch_block" if Input.is_key_pressed(KEY_S) else "block"
 
@@ -245,10 +245,10 @@ func _jump_direction_input() -> float:
 	return clampf(direction, -1.0, 1.0)
 
 func _jump_action_for_direction(direction: float) -> String:
-	if direction > 0.0:
-		return "jump_forward"
-	if direction < 0.0:
-		return "jump_back"
+	if direction != 0.0:
+		if manager != null and manager.has_method("is_screen_direction_toward_enemy"):
+			return "jump_forward" if manager.is_screen_direction_toward_enemy(direction) else "jump_back"
+		return "jump_forward" if direction > 0.0 else "jump_back"
 	return "neutral_jump"
 
 func _update_live_movement(real_delta: float) -> void:

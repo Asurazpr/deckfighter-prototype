@@ -2,20 +2,30 @@ class_name Player
 extends CharacterBody2D
 
 signal hp_changed(current_hp: int, max_hp: int)
+signal stance_changed(current_stance: int, max_stance: int)
 signal defense_performed(defense_type: String)
 
 const CombatAnimationDriver := preload("res://scripts/animation/combat_animation_driver.gd")
+const StanceConfig := preload("res://scripts/enemy/enemy_stance_config.gd")
 const SPEED := 250.0
-const JUMP_VELOCITY := -500.0
+const JUMP_VELOCITY := -650.0
 const GRAVITY := 1300.0
 
+enum StanceState { NORMAL, BROKEN_HITSTUN, BROKEN_BLOCKSTUN, RECOVERING_PROTECTED }
+
 @export var max_hp := 100
+@export var max_stance := StanceConfig.MAX_STANCE
 @export var hurtbox_width := 50.0
 @export var hurtbox_height := 90.0
 @export var crouch_hurtbox_width := 50.0
 @export var crouch_hurtbox_height := 40.0
 
 var hp := max_hp
+var stance := 0
+var stance_state := StanceState.NORMAL
+var stance_recovery_frames_remaining := 0
+var stance_break_stun_frames_remaining := 0
+var stance_protection_frames_remaining := 0
 var input_enabled := true
 var free_movement_enabled := true
 var crouching := false
@@ -36,6 +46,8 @@ var _base_hurtbox_shape_position := Vector2.ZERO
 func _ready() -> void:
 	hp = max_hp
 	hp_changed.emit(hp, max_hp)
+	stance = 0
+	stance_changed.emit(stance, max_stance)
 	_cache_hurtbox_shape()
 	_set_state("READY")
 
@@ -75,6 +87,78 @@ func take_damage(amount: int) -> void:
 	CombatAnimationDriver.drive_rig(rig, "hitstun", "IMPACT", 1.0, "", false)
 	CombatAnimationDriver.play_impact(rig)
 	_flash(Color.INDIAN_RED, "HIT")
+
+func add_stance_damage(amount: int) -> void:
+	if is_stance_protected():
+		if amount > 0:
+			print("Player stance protected: ignored %d stance damage" % amount)
+		return
+	if amount <= 0:
+		return
+	stance = mini(max_stance, stance + amount)
+	stance_changed.emit(stance, max_stance)
+	if stance >= max_stance:
+		enter_stance_break(false)
+
+func add_block_stance_damage(amount: int) -> void:
+	if is_stance_protected():
+		if amount > 0:
+			print("Player stance protected: ignored %d stance damage" % amount)
+		return
+	if amount <= 0:
+		return
+	stance = mini(max_stance, stance + amount)
+	stance_changed.emit(stance, max_stance)
+	if stance >= max_stance:
+		enter_stance_break(true)
+
+func enter_stance_break(from_block := false) -> void:
+	if stance_state != StanceState.NORMAL:
+		return
+	stance_state = StanceState.BROKEN_BLOCKSTUN if from_block else StanceState.BROKEN_HITSTUN
+	stance_break_stun_frames_remaining = StanceConfig.BREAK_BLOCK_RECOVERY_FRAMES if from_block else StanceConfig.BREAK_HITSTUN_FRAMES
+	stance_protection_frames_remaining = StanceConfig.PROTECTION_RECOVERY_FRAMES
+	_update_stance_recovery_total()
+	if has_method("force_finish_action"):
+		call("force_finish_action")
+	CombatAnimationDriver.drive_rig(rig, "stance_break", "IMPACT", 1.0, "", false)
+	_flash(Color.ORANGE, "STANCE BREAK")
+
+func advance_stance_recovery_frames(frames: int) -> void:
+	if frames <= 0 or stance_state == StanceState.NORMAL:
+		return
+
+	var remaining_frames := frames
+	if stance_break_stun_frames_remaining > 0:
+		var spent_stun := mini(stance_break_stun_frames_remaining, remaining_frames)
+		stance_break_stun_frames_remaining -= spent_stun
+		remaining_frames -= spent_stun
+		if stance_break_stun_frames_remaining <= 0 and stance_state != StanceState.RECOVERING_PROTECTED:
+			stance_state = StanceState.RECOVERING_PROTECTED
+
+	if remaining_frames > 0 and stance_protection_frames_remaining > 0:
+		var spent_protection := mini(stance_protection_frames_remaining, remaining_frames)
+		stance_protection_frames_remaining -= spent_protection
+
+	_update_stance_recovery_total()
+	if stance_break_stun_frames_remaining <= 0 and stance_protection_frames_remaining <= 0:
+		_finish_stance_recovery()
+
+func is_stance_protected() -> bool:
+	return stance_state == StanceState.BROKEN_HITSTUN or stance_state == StanceState.BROKEN_BLOCKSTUN or stance_state == StanceState.RECOVERING_PROTECTED
+
+func get_stance_state_name() -> String:
+	match stance_state:
+		StanceState.NORMAL:
+			return "NORMAL"
+		StanceState.BROKEN_HITSTUN:
+			return "BROKEN_HITSTUN"
+		StanceState.BROKEN_BLOCKSTUN:
+			return "BROKEN_BLOCKSTUN"
+		StanceState.RECOVERING_PROTECTED:
+			return "RECOVERING_PROTECTED"
+		_:
+			return "UNKNOWN"
 
 func perform_card_action(card: Resource) -> void:
 	_flash(Color.GOLD, card.display_name.to_upper())
@@ -159,7 +243,10 @@ func get_animation_debug() -> Dictionary:
 		"rig_scale": rig.scale if rig != null else Vector2.ONE,
 		"facing": "right" if rig == null or float(rig.facing) >= 0.0 else "left",
 		"hit_level": current_animation_hit_level,
-		"crouching": crouching
+		"crouching": crouching,
+		"stance": stance,
+		"stance_state": get_stance_state_name(),
+		"stance_recovery_frames": stance_recovery_frames_remaining
 	}
 
 func set_input_enabled(enabled: bool) -> void:
@@ -209,6 +296,19 @@ func _apply_crouch_hurtbox(enabled: bool) -> void:
 	else:
 		rect_shape.size = _base_hurtbox_shape_size
 		hurtbox_shape.position = _base_hurtbox_shape_position
+
+func _update_stance_recovery_total() -> void:
+	stance_recovery_frames_remaining = stance_break_stun_frames_remaining + stance_protection_frames_remaining
+
+func _finish_stance_recovery() -> void:
+	stance = 0
+	stance_changed.emit(stance, max_stance)
+	stance_state = StanceState.NORMAL
+	stance_break_stun_frames_remaining = 0
+	stance_protection_frames_remaining = 0
+	stance_recovery_frames_remaining = 0
+	if not crouching:
+		_set_state("READY")
 
 func _flash(color: Color, label: String) -> void:
 	body.color = color

@@ -10,18 +10,18 @@ func route_key_event(event: InputEvent, manager: Node, viewport: Viewport) -> bo
 		return false
 
 	if manager.can_accept_live_movement():
+		if key_event.keycode == KEY_W and manager.has_method("request_live_neutral_jump"):
+			manager.request_live_neutral_jump()
+			viewport.set_input_as_handled()
+			return true
 		if _handle_queue_controls(key_event.keycode, manager, viewport, true):
 			return true
 
 	if manager.can_accept_live_defense():
 		if _is_debug_toggle(key_event.keycode):
 			return false
-		if key_event.keycode == KEY_SPACE or key_event.keycode == KEY_W:
+		if key_event.keycode == KEY_W:
 			manager.reaction_window_system.request_jump_evade()
-			viewport.set_input_as_handled()
-			return true
-		if key_event.keycode == KEY_L:
-			manager.reaction_window_system.request_backstep_evade()
 			viewport.set_input_as_handled()
 			return true
 		return false
@@ -77,4 +77,4 @@ func _handle_queue_controls(keycode: Key, manager: Node, viewport: Viewport, slo
 			return false
 
 func _is_debug_toggle(keycode: Key) -> bool:
-	return keycode == KEY_F1 or keycode == KEY_F2 or keycode == KEY_F3 or keycode == KEY_F4 or keycode == KEY_F5 or keycode == KEY_F6
+	return keycode == KEY_F1 or keycode == KEY_F2 or keycode == KEY_F3 or keycode == KEY_F4 or keycode == KEY_F5 or keycode == KEY_F6 or keycode == KEY_F7

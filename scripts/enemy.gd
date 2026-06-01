@@ -28,6 +28,7 @@ const ATTACKS := EnemyMoveData.ATTACKS
 @export var punish_startup := 5
 @export var punish_range := 120.0
 @export var punish_damage := 18
+@export var punish_stance_damage := 12
 @export_enum("NORMAL", "ELITE", "BOSS") var intent_tier := "NORMAL"
 
 var hp := max_hp

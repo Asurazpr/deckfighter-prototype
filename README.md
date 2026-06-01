@@ -114,11 +114,11 @@ Current prototype controls may change during development.
 | Category | Input | Action |
 | :--- | :--- | :--- |
 | Movement | `A` / `D` | Move or queue step actions during tactical combat |
-| Movement | `Space` | Jump / neutral jump / jump-in movement |
-| Movement | `L` | Backstep |
-| Defense | `J` | Block |
-| Defense | `S` + `J` | Low block |
-| Defense | `Space` during reaction | Jump evade LOW attacks if airborne before impact |
+| Movement | `W` | Jump / neutral jump / jump-in movement |
+| Movement | `W` + `A` / `D` | Back jump / forward jump |
+| Defense | `L` | Block |
+| Defense | `S` + `L` | Low block |
+| Defense | `W` during reaction | Jump evade LOW attacks if airborne before impact |
 | Combat | Mouse | Select cards / queue actions |
 | Combat | `1`-`4` | Queue, play, or challenge with hand cards |
 | Combat | `E` | Execute queued tactical actions / end turn |

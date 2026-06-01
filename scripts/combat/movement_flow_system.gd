@@ -4,6 +4,11 @@ extends RefCounted
 const BASIC_STEP_STARTUP_FRAMES := 3.0
 const BASIC_STEP_TRAVEL_FRAMES := 8.0
 const BASIC_STEP_RECOVERY_FRAMES := 4.0
+const BASIC_JUMP_STARTUP_FRAMES := 4.0
+const BASIC_JUMP_TRAVEL_FRAMES := 42.0
+const BASIC_JUMP_RECOVERY_FRAMES := 6.0
+const BASIC_JUMP_HEIGHT := 220.0
+const BASIC_JUMP_HORIZONTAL_SPEED := 560.0
 const STEP_PHASE_IDLE := "DONE"
 const STEP_PHASE_STARTUP := "STARTUP"
 const STEP_PHASE_TRAVEL := "TRAVEL"
@@ -35,8 +40,14 @@ var movement_locked := false
 var movement_pose := "idle"
 var enemy_movement_phase := STEP_PHASE_IDLE
 var enemy_movement_frames_remaining := 0.0
+var jump_phase := STEP_PHASE_IDLE
+var jump_frames_remaining := 0.0
+var jump_direction := 0.0
+var jump_ground_y := 0.0
+var jump_elapsed_frames := 0.0
 var _frame_accumulator := 0.0
 var _logged_travel := false
+var _logged_jump_travel := false
 var _enemy_movement_logged := false
 var _enemy_reached_range_logged := false
 var enemy_approach_end_reason := "none"
@@ -82,6 +93,7 @@ func exit() -> void:
 		last_player_live_movement_active = false
 		last_enemy_approach_active = false
 		_reset_player_step()
+		_reset_player_jump()
 		_reset_enemy_step()
 		_clear_player_locomotion_visual()
 	player.set_free_movement_enabled(false)
@@ -94,18 +106,28 @@ func tick(delta: float) -> Dictionary:
 	approach_target_distance = _current_approach_target_distance()
 	var previous_distance := movement_system.distance_between_fighters()
 	player_live_movement_active = _input_direction() != 0.0
-	_tick_player_step(delta)
+	if _player_jump_active():
+		player_live_movement_active = true
+		_tick_player_jump(delta)
+	else:
+		_tick_player_step(delta)
 	_tick_enemy_approach_step(delta)
-	movement_system.clamp_duel_distance()
+	if _player_jump_active():
+		movement_system.clamp_duel_max_distance()
+	else:
+		movement_system.clamp_duel_distance()
 	var current_distance := movement_system.distance_between_fighters()
 	distance_change_rate = (current_distance - previous_distance) / maxf(delta, 0.001)
 	last_distance = current_distance
 	_log_state_changes()
-	var reached_intent_range := current_distance <= approach_target_distance
+	var reached_intent_range := current_distance <= approach_target_distance and not _player_jump_active()
 	if reached_intent_range and not _enemy_reached_range_logged:
 		enemy_approach_end_reason = "distance %.0f <= target %.0f" % [current_distance, approach_target_distance]
 		manager.log_message.emit("Enemy reached range; evaluating intent.")
 		_enemy_reached_range_logged = true
+	elif _player_jump_active():
+		enemy_approach_end_reason = "waiting: player airborne"
+		_enemy_reached_range_logged = false
 	elif not reached_intent_range:
 		enemy_approach_end_reason = "approaching: distance %.0f > target %.0f" % [current_distance, approach_target_distance]
 		_enemy_reached_range_logged = false
@@ -140,6 +162,19 @@ func _apply_player_movement(real_delta: float) -> void:
 		return
 	player.global_position.x += direction * player_speed * real_delta
 
+func request_player_jump() -> void:
+	if not active or _player_jump_active() or _player_is_crouching():
+		return
+	jump_direction = _input_direction()
+	jump_phase = STEP_PHASE_STARTUP
+	jump_frames_remaining = BASIC_JUMP_STARTUP_FRAMES
+	jump_ground_y = player.global_position.y
+	jump_elapsed_frames = 0.0
+	_logged_jump_travel = false
+	var action_name := _jump_action_name()
+	manager.log_message.emit("%s started." % action_name.capitalize().replace("_", " "))
+	_show_player_jump_pose()
+
 func _apply_enemy_movement(real_delta: float) -> void:
 	enemy_approach_active = movement_system.distance_between_fighters() > approach_target_distance
 	if not enemy_approach_active:
@@ -147,6 +182,8 @@ func _apply_enemy_movement(real_delta: float) -> void:
 	enemy.global_position.x += movement_system.direction_to_player() * enemy_speed * real_delta
 
 func _tick_player_step(real_delta: float) -> void:
+	if _player_jump_active():
+		return
 	var held_direction := _input_direction()
 	if movement_phase == STEP_PHASE_IDLE:
 		if held_direction != 0.0:
@@ -177,6 +214,30 @@ func _tick_player_step(real_delta: float) -> void:
 			_reset_player_step()
 			if held_direction != 0.0:
 				_start_player_step(held_direction)
+
+func _tick_player_jump(real_delta: float) -> void:
+	var frames := real_delta * 60.0
+	jump_elapsed_frames += frames
+	if jump_phase == STEP_PHASE_TRAVEL:
+		player.global_position.x += jump_direction * BASIC_JUMP_HORIZONTAL_SPEED * real_delta
+	jump_frames_remaining = maxf(0.0, jump_frames_remaining - frames)
+	_apply_jump_vertical_position()
+	_show_player_jump_pose()
+	if jump_frames_remaining > 0.0:
+		return
+
+	match jump_phase:
+		STEP_PHASE_STARTUP:
+			jump_phase = STEP_PHASE_TRAVEL
+			jump_frames_remaining = BASIC_JUMP_TRAVEL_FRAMES
+			_logged_jump_travel = false
+			manager.log_message.emit("Jump travel.")
+		STEP_PHASE_TRAVEL:
+			jump_phase = STEP_PHASE_RECOVERY
+			jump_frames_remaining = BASIC_JUMP_RECOVERY_FRAMES
+		STEP_PHASE_RECOVERY:
+			manager.log_message.emit("Jump landed.")
+			_reset_player_jump()
 
 func _start_player_step(direction: float) -> void:
 	movement_direction = direction
@@ -242,7 +303,21 @@ func _show_player_step_pose() -> void:
 	else:
 		_show_actor_pose(player, movement_pose, phase_name, progress)
 
+func _show_player_jump_pose() -> void:
+	var phase_name := "STARTUP"
+	var phase_total := BASIC_JUMP_STARTUP_FRAMES
+	if jump_phase == STEP_PHASE_TRAVEL:
+		phase_name = "ACTIVE"
+		phase_total = BASIC_JUMP_TRAVEL_FRAMES
+	elif jump_phase == STEP_PHASE_RECOVERY:
+		phase_name = "RECOVERY"
+		phase_total = BASIC_JUMP_RECOVERY_FRAMES
+	var progress := 1.0 - jump_frames_remaining / maxf(1.0, phase_total)
+	_show_actor_pose(player, _jump_action_name(), phase_name, progress)
+
 func _show_player_idle_pose() -> void:
+	if _player_jump_active():
+		return
 	if player != null and player.has_method("clear_live_locomotion_visual"):
 		player.clear_live_locomotion_visual()
 		return
@@ -259,6 +334,37 @@ func _reset_player_step() -> void:
 	movement_direction = 0.0
 	movement_locked = false
 	movement_pose = "idle"
+
+func _reset_player_jump() -> void:
+	if jump_ground_y != 0.0:
+		player.global_position.y = jump_ground_y
+	jump_phase = STEP_PHASE_IDLE
+	jump_frames_remaining = 0.0
+	jump_direction = 0.0
+	jump_ground_y = 0.0
+	jump_elapsed_frames = 0.0
+	_logged_jump_travel = false
+
+func _player_jump_active() -> bool:
+	return jump_phase != STEP_PHASE_IDLE
+
+func player_jump_active() -> bool:
+	return _player_jump_active()
+
+func _jump_action_name() -> String:
+	if jump_direction == 0.0:
+		return "neutral_jump"
+	if signf(jump_direction) == signf(movement_system.direction_to_enemy()):
+		return "jump_forward"
+	return "jump_back"
+
+func _apply_jump_vertical_position() -> void:
+	var total_frames := BASIC_JUMP_STARTUP_FRAMES + BASIC_JUMP_TRAVEL_FRAMES + BASIC_JUMP_RECOVERY_FRAMES
+	var jump_progress := clampf(jump_elapsed_frames / total_frames, 0.0, 1.0)
+	player.global_position.y = jump_ground_y - sin(jump_progress * PI) * BASIC_JUMP_HEIGHT
+
+func _player_is_crouching() -> bool:
+	return player != null and player.has_method("is_crouching") and player.is_crouching()
 
 func _reset_enemy_step() -> void:
 	enemy_movement_phase = STEP_PHASE_IDLE

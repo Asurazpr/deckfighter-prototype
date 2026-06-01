@@ -16,7 +16,7 @@ script = ExtResource("3_arena")
 [node name="Background" type="ColorRect" parent="."]
 offset_right = 1600.0
 offset_bottom = 900.0
-color = Color(0.08, 0.09, 0.11, 1)
+color = Color(0.045, 0.05, 0.06, 1)
 
 [node name="Floor" type="StaticBody2D" parent="."]
 position = Vector2(800, 650)
@@ -26,16 +26,16 @@ shape = SubResource("RectangleShape2D_floor")
 
 [node name="FloorVisual" type="ColorRect" parent="Floor"]
 offset_left = -850.0
-offset_top = -22.0
+offset_top = -18.0
 offset_right = 850.0
-offset_bottom = 22.0
-color = Color(0.18, 0.2, 0.23, 1)
+offset_bottom = 18.0
+color = Color(0.13, 0.145, 0.16, 1)
 
 [node name="Player" parent="." instance=ExtResource("1_player")]
-position = Vector2(680, 628)
+position = Vector2(690, 628)
 
 [node name="Enemy" parent="." instance=ExtResource("2_enemy")]
-position = Vector2(800, 628)
+position = Vector2(910, 628)
 
 [node name="DeckManager" type="Node" parent="."]
 script = ExtResource("4_deck")
@@ -162,7 +162,7 @@ anchor_top = 1.0
 anchor_right = 1.0
 anchor_bottom = 1.0
 offset_left = 24.0
-offset_top = -168.0
+offset_top = -208.0
 offset_right = -24.0
 offset_bottom = -18.0
 grow_horizontal = 2
