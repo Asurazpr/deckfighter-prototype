@@ -33,6 +33,9 @@ const ActorCombatStateScript := preload("res://scripts/combat/actor_combat_state
 const ActionRequestScript := preload("res://scripts/combat/action_request.gd")
 const DEBUG_ATTACK_HITBOX_LIFETIME := 0.25
 
+enum ControlMode { TIME_TACTICAL, POWER_ACTION }
+
+@export_enum("TIME_TACTICAL", "POWER_ACTION") var control_mode: int = ControlMode.TIME_TACTICAL
 @export var starting_frame_advantage := 0
 @export var punish_threshold := 10
 @export var enemy_punish_startup := 5
@@ -64,6 +67,11 @@ const DEBUG_ATTACK_HITBOX_LIFETIME := 0.25
 @export var slow_neutral_intent_delay := 1.2
 @export var defensive_reaction_wait_frames := 20
 @export var max_defensive_reaction_retries := 3
+@export var power_action_enemy_startup_multiplier := 1.5
+@export var power_action_enemy_recovery_multiplier := 2.0
+@export var power_action_enemy_decision_cooldown_frames := 24
+@export var power_action_enemy_hitstun_frames := 18
+@export var power_action_block_startup_frames := 4
 
 var frame_advantage := 0
 var last_defense := ""
@@ -112,6 +120,7 @@ var player_actor_state
 var enemy_actor_state
 var current_player_action_request
 var current_enemy_action_request
+var pending_player_action_request_override
 var queued_action_in_progress := false
 var last_state_repair_warning := ""
 var player_trade_recovery_frames_remaining := 0.0
@@ -128,6 +137,21 @@ var player_action_lifecycle_phase := "DONE"
 var player_action_lifecycle_token := 0
 var player_action_lifecycle_recovery_frames_remaining := 0.0
 var player_action_lifecycle_recovery_running := false
+var power_action_enemy_startup_frame_accumulator := 0.0
+var power_action_enemy_recovery_frame_accumulator := 0.0
+var power_action_enemy_active_frame_accumulator := 0.0
+var power_action_enemy_impact_resolving := false
+var power_action_enemy_decision_cooldown_remaining := 0.0
+var power_action_enemy_hitstun_frame_accumulator := 0.0
+var power_action_enemy_active_frames_remaining := 0.0
+var power_action_enemy_active_result: Dictionary = {}
+var power_action_enemy_active_resolved := false
+var power_action_enemy_recovery_frames_elapsed := 0.0
+var power_action_block_held := false
+var power_action_block_defense_type := ""
+var power_action_block_startup_frames_remaining := 0.0
+var power_action_block_startup_accumulator := 0.0
+var last_power_action_enemy_reject_reason := ""
 
 @onready var player = $"../Player"
 @onready var enemy = $"../Enemy"
@@ -200,6 +224,36 @@ func start_fight() -> void:
 func is_fight_started() -> bool:
 	return fight_started
 
+func get_control_mode_name() -> String:
+	match control_mode:
+		ControlMode.POWER_ACTION:
+			return "POWER_ACTION"
+		_:
+			return "TIME_TACTICAL"
+
+func is_power_action_mode() -> bool:
+	return control_mode == ControlMode.POWER_ACTION
+
+func is_time_tactical_mode() -> bool:
+	return control_mode == ControlMode.TIME_TACTICAL
+
+func toggle_control_mode() -> void:
+	var next_mode := ControlMode.POWER_ACTION if control_mode == ControlMode.TIME_TACTICAL else ControlMode.TIME_TACTICAL
+	set_control_mode(next_mode)
+
+func set_control_mode(next_mode: int) -> void:
+	var old_mode := get_control_mode_name()
+	control_mode = clampi(next_mode, ControlMode.TIME_TACTICAL, ControlMode.POWER_ACTION)
+	var new_mode := get_control_mode_name()
+	if old_mode == new_mode:
+		return
+	log_message.emit("Control mode changed: %s -> %s." % [old_mode, new_mode])
+	_record_combat_event("control_mode_changed", "Control mode changed.", {
+		"old_mode": old_mode,
+		"new_mode": new_mode
+	})
+	frame_advantage_changed.emit(frame_advantage)
+
 func set_enemy_intent_ui_visible(visible: bool) -> void:
 	if enemy != null and enemy.has_method("set_intent_ui_visible"):
 		enemy.set_intent_ui_visible(visible)
@@ -238,6 +292,16 @@ func _process(_delta: float) -> void:
 	elif enemy.hp <= 0:
 		_end_combat("Enemy defeated.")
 
+func _physics_process(delta: float) -> void:
+	if combat_over or not is_power_action_mode():
+		return
+	_tick_power_action_block(delta)
+	_tick_power_action_enemy_intent(delta)
+	_tick_power_action_enemy_active(delta)
+	_tick_power_action_enemy_recovery(delta)
+	_tick_power_action_enemy_decision_cooldown(delta)
+	_tick_power_action_enemy_hitstun(delta)
+
 func get_debug_text() -> String:
 	return "Distance: %.0f\nEnemy intent: %s\nEnemy base startup: %d\nEnemy effective startup: %d\nEnemy remaining startup: %d\nLast player startup: %d\nEnemy vulnerable frames: %d\nInitiative Offset: %s\nStance State: %s\nStance Recovery Frames: %d\nStance Break Stun Remaining: %d\nStance Protected: %s\n%s\n%s\nMode: %s\nPlayer: %s\nEnemy: %s\nLast Transition: %s" % [
 		_distance_between_fighters(),
@@ -261,8 +325,9 @@ func get_debug_text() -> String:
 	]
 
 func get_main_hud_debug_text() -> String:
-	return "Distance: %.0f\nMode: %s\nPhase: %s\nActor: %s\n%s" % [
+	return "Distance: %.0f\nControl: %s\nMode: %s\nPhase: %s\nActor: %s\n%s" % [
 		_distance_between_fighters(),
+		get_control_mode_name(),
 		_current_mode(),
 		combat_state_machine.current_phase_name(),
 		combat_state_machine.current_actor(),
@@ -329,6 +394,7 @@ func get_combat_log_export_context() -> Dictionary:
 	return {
 		"timestamp": Time.get_datetime_string_from_system(),
 		"combat_state": _current_mode(),
+		"control_mode": get_control_mode_name(),
 		"frame_advantage": frame_advantage,
 		"distance": _distance_between_fighters(),
 		"input_lock_state": _input_lock_state(),
@@ -369,6 +435,9 @@ func _input_lock_state() -> String:
 	_repair_invalid_combat_state()
 	if combat_over:
 		return "game_over"
+	if is_power_action_mode():
+		var power_action_reject_reason := _power_action_player_reject_reason()
+		return "direct_input_ready" if power_action_reject_reason == "" else power_action_reject_reason
 	if combat_state_machine != null and not combat_state_machine.can_accept_action_request(_player_card_action_request(), _player_reward_frame_value(), not _player_action_locked()):
 		return "state_machine:%s" % combat_state_machine.state_name()
 	if _queue_is_resolving():
@@ -393,6 +462,56 @@ func _record_combat_event(event_type: String, message := "", data := {}) -> void
 	if message != "":
 		event["message"] = message
 	combat_trace_events.append(event)
+
+func _record_action_lifecycle_event(event_type: String, data := {}) -> void:
+	var event: Dictionary = data.duplicate(true)
+	_record_combat_event(event_type, event_type, event)
+	var actor := String(event.get("actor", "actor"))
+	var move_id := String(event.get("move_id", "unknown"))
+	log_message.emit("%s %s %s." % [actor.to_upper(), move_id, event_type])
+
+func _record_rejected_action(actor: String, reason: String, move_id := "") -> void:
+	_record_action_lifecycle_event("REJECTED_ACTION", {
+		"actor": actor,
+		"move_id": move_id,
+		"reason": reason,
+		"rejection_reason": reason,
+		"global_combat_state": _current_mode(),
+		"player_phase": _player_phase_for_log(),
+		"enemy_phase": _enemy_phase_for_log(),
+		"player_can_act": _power_action_player_can_act(),
+		"enemy_can_act": _power_action_enemy_can_act()
+	})
+
+func _action_request_source_name(action_request) -> String:
+	if action_request is ActionRequestScript:
+		return action_request.source_type_name()
+	if action_request is Dictionary:
+		return String(action_request.get("source_type", "unknown"))
+	return "none"
+
+func _player_phase_for_log() -> String:
+	if player_action_lifecycle_active and not player_action_lifecycle_done:
+		return player_action_lifecycle_phase
+	if player_trade_recovery_frames_remaining > 0.0:
+		return "TRADE_RECOVERY"
+	var debug := _player_debug()
+	if not debug.is_empty():
+		return String(debug.get("phase", "DONE"))
+	return "DONE"
+
+func _enemy_phase_for_log() -> String:
+	if current_enemy_intent != "" and remaining_startup_frames > 0:
+		return "STARTUP"
+	if combat_state_machine != null and combat_state_machine.current_state == CombatStateMachineScript.State.ENEMY_ACTIVE:
+		return "ACTIVE"
+	if enemy_action_recovery_frames_remaining > 0.0 or (combat_state_machine != null and combat_state_machine.current_state == CombatStateMachineScript.State.ENEMY_RECOVERY):
+		return "RECOVERY"
+	if enemy_vulnerable_frames_remaining > 0:
+		return "HITSTUN"
+	if _enemy_break_frames_remaining() > 0:
+		return "BLOCKSTUN"
+	return "DONE"
 
 func _animation_debug_for(actor: Node, actor_name: String) -> Dictionary:
 	var data := {}
@@ -497,6 +616,8 @@ func get_impact_bar_data() -> Dictionary:
 
 func can_play_cards() -> bool:
 	_repair_invalid_combat_state()
+	if is_power_action_mode():
+		return false
 	if not fight_started:
 		return false
 	if _is_reaction_window_state():
@@ -506,6 +627,8 @@ func can_play_cards() -> bool:
 
 func is_hand_card_playable(index: int) -> bool:
 	_repair_invalid_combat_state()
+	if is_power_action_mode():
+		return false
 	if not fight_started:
 		return false
 	if _player_action_locked():
@@ -522,6 +645,8 @@ func is_hand_card_playable(index: int) -> bool:
 
 func get_card_input_rejection_reason(index: int) -> String:
 	_repair_invalid_combat_state()
+	if is_power_action_mode():
+		return "POWER_ACTION uses direct inputs J/K/U/I; cards do not mutate the deck"
 	if index < 0 or index >= deck_manager.hand.size():
 		return "no hand card at index %d" % index
 	if _is_card_instance_queued(deck_manager.hand[index]):
@@ -606,6 +731,9 @@ func _enemy_attack_priority_ids() -> Array[String]:
 
 func play_card(index: int) -> void:
 	_repair_invalid_combat_state()
+	if is_power_action_mode():
+		log_message.emit("Card input ignored in POWER_ACTION. Use direct attacks.")
+		return
 	if _player_action_locked():
 		log_message.emit("Card input rejected: %s." % _player_action_lock_reason())
 		return
@@ -636,6 +764,217 @@ func play_card(index: int) -> void:
 	var starts_new_route: bool = not route_valid and _card_has_tag(preview_card, "starter")
 	await _resolve_pressure_card(index, route_valid, starts_new_route)
 
+func request_direct_action(input_name: String, move_id: String) -> void:
+	_repair_invalid_combat_state()
+	if not is_power_action_mode():
+		log_message.emit("Direct input ignored in TIME_TACTICAL: %s." % input_name)
+		return
+	if combat_over or not fight_started:
+		log_message.emit("Direct input rejected: fight has not started.")
+		_record_rejected_action("player", "fight_not_started", move_id)
+		return
+	var card := _direct_move_card(move_id)
+	if card == null:
+		log_message.emit("Direct input rejected: no move data for %s." % move_id)
+		_record_rejected_action("player", "missing_move_data", move_id)
+		return
+	var request = _player_direct_action_request(input_name, move_id, card)
+	var power_action_reject_reason := _power_action_player_reject_reason()
+	if power_action_reject_reason != "":
+		log_message.emit("Direct input rejected: %s." % power_action_reject_reason)
+		_record_rejected_action("player", power_action_reject_reason, move_id)
+		return
+	log_message.emit("Direct input action requested: mode=%s input=%s move_id=%s source=%s state=%s." % [
+		get_control_mode_name(),
+		input_name,
+		move_id,
+		request.source_type_name(),
+		combat_state_machine.state_name() if combat_state_machine != null else "Unknown"
+	])
+	_record_combat_event("direct_input_action_requested", "Direct input created ActionRequest.", {
+		"mode": get_control_mode_name(),
+		"input_name": input_name,
+		"move_id": move_id,
+		"action_request": request.to_dict(),
+		"combat_state": combat_state_machine.state_name() if combat_state_machine != null else "Unknown"
+	})
+	if _is_reaction_window_state() or _is_enemy_intent_state():
+		log_message.emit("Challenge attempt started.")
+		await _try_interrupt_with_direct_card(card, request)
+		return
+	_cancel_enemy_recovery_for_power_action_punish(move_id)
+	pending_player_action_request_override = request
+	await _resolve_player_card(card, 0, true, false, false, true, true, "direct_input")
+
+func _direct_move_card(move_id: String) -> Resource:
+	if deck_manager == null:
+		return null
+	if not ("card_library" in deck_manager):
+		return null
+	var card_library: Dictionary = deck_manager.card_library
+	if not card_library.has(move_id):
+		return null
+	var source_card := card_library[move_id] as Resource
+	if source_card == null:
+		return null
+	var card := source_card.duplicate()
+	card.instance_id = 0
+	return card
+
+func _player_direct_action_request(input_name: String, move_id: String, card: Resource):
+	return ActionRequestScript.from_direct_input("player", move_id, input_name, Engine.get_process_frames(), 0, {
+		"display_name": card.display_name if card != null else move_id,
+		"move_id": move_id,
+		"temporary_move_data": "renka_card_definition"
+	})
+
+func _power_action_player_reject_reason() -> String:
+	if combat_over:
+		return "combat_over"
+	if not fight_started:
+		return "fight_not_started"
+	if _queue_is_resolving() or queued_action_in_progress:
+		return "queue_executing"
+	if _player_action_locked():
+		return _player_action_lock_reason()
+	if player_trade_recovery_frames_remaining > 0.0:
+		return "player_trade_recovery"
+	if combat_state_machine != null:
+		if combat_state_machine.current_state == CombatStateMachineScript.State.ENEMY_ACTIVE:
+			return "enemy_active"
+		if combat_state_machine.current_state == CombatStateMachineScript.State.HITSTOP:
+			return "hitstop"
+		if combat_state_machine.current_state == CombatStateMachineScript.State.GAME_OVER:
+			return "game_over"
+	return ""
+
+func _power_action_player_can_act() -> bool:
+	return is_power_action_mode() and _power_action_player_reject_reason() == ""
+
+func _power_action_enemy_can_act() -> bool:
+	return is_power_action_mode() and _enemy_power_action_reject_reason() == ""
+
+func _cancel_enemy_recovery_for_power_action_punish(move_id: String) -> void:
+	if not is_power_action_mode() or combat_state_machine == null:
+		return
+	if combat_state_machine.current_state != CombatStateMachineScript.State.ENEMY_RECOVERY:
+		return
+	if enemy_action_recovery_frames_remaining <= 0.0:
+		return
+	log_message.emit("POWER_ACTION punish input during enemy recovery: %s." % move_id)
+	enemy_action_recovery_frames_remaining = 0.0
+	power_action_enemy_recovery_frame_accumulator = 0.0
+	attack_in_progress = false
+	waiting_for_defense = false
+	current_enemy_action_request = null
+	current_enemy_intent = ""
+	remaining_startup_frames = 0
+	hitbox_system.finish_enemy_move()
+	if enemy != null:
+		if enemy.has_method("finish_attack"):
+			enemy.finish_attack()
+		elif enemy.has_method("clear_intent"):
+			enemy.clear_intent()
+
+func request_power_action_block(pressed: bool) -> void:
+	if not is_power_action_mode():
+		return
+	if pressed:
+		if power_action_block_held:
+			return
+		var reject_reason := _power_action_block_reject_reason()
+		if reject_reason != "":
+			log_message.emit("BLOCK_REJECTED: %s." % reject_reason)
+			_record_combat_event("BLOCK_REJECTED", "BLOCK_REJECTED", {
+				"actor": "player",
+				"reason": reject_reason,
+				"global_combat_state": _current_mode(),
+				"player_phase": _player_phase_for_log(),
+				"enemy_phase": _enemy_phase_for_log()
+			})
+			return
+		power_action_block_held = true
+		power_action_block_defense_type = "crouch_block" if Input.is_key_pressed(KEY_S) else "block"
+		power_action_block_startup_frames_remaining = float(power_action_block_startup_frames)
+		power_action_block_startup_accumulator = 0.0
+		if player != null and player.has_method("show_timeline_phase"):
+			player.show_timeline_phase(power_action_block_defense_type, "STARTUP", 0.0, "", false)
+		log_message.emit("BLOCK_START: %s." % _defense_display_name(power_action_block_defense_type))
+		_record_combat_event("BLOCK_START", "BLOCK_START", {
+			"actor": "player",
+			"defense_type": power_action_block_defense_type,
+			"startup_frames": power_action_block_startup_frames
+		})
+		return
+	if not power_action_block_held and power_action_block_defense_type == "":
+		return
+	power_action_block_held = false
+	power_action_block_startup_frames_remaining = 0.0
+	power_action_block_startup_accumulator = 0.0
+	if player != null and player.has_method("release_block_action"):
+		player.release_block_action()
+	log_message.emit("BLOCK_RELEASE.")
+	_record_combat_event("BLOCK_RELEASE", "BLOCK_RELEASE", {
+		"actor": "player",
+		"defense_type": power_action_block_defense_type
+	})
+	power_action_block_defense_type = ""
+
+func _power_action_block_reject_reason() -> String:
+	if combat_over:
+		return "combat_over"
+	if not fight_started:
+		return "fight_not_started"
+	if player_trade_recovery_frames_remaining > 0.0:
+		return "player_trade_recovery"
+	if _queue_is_resolving() or queued_action_in_progress:
+		return "queue_executing"
+	if player != null and player.has_method("get_stance_state_name") and String(player.get_stance_state_name()) != "NORMAL":
+		return "broken"
+	var debug := _player_debug()
+	var logic_state := String(debug.get("logic_state", debug.get("action_state", "NEUTRAL"))).to_lower()
+	if logic_state.find("hitstun") != -1:
+		return "hitstun"
+	if logic_state.find("blockstun") != -1:
+		return "blockstun"
+	if logic_state.find("attack_startup") != -1 or logic_state.find("attack_active") != -1 or logic_state.find("attack_recovery") != -1:
+		return "action_locked"
+	if _player_action_locked():
+		return _player_action_lock_reason()
+	return ""
+
+func _tick_power_action_block(delta: float) -> void:
+	if not power_action_block_held or power_action_block_startup_frames_remaining <= 0.0:
+		return
+	power_action_block_startup_accumulator += delta * 60.0
+	var frames := int(floor(power_action_block_startup_accumulator))
+	if frames <= 0:
+		return
+	power_action_block_startup_accumulator -= float(frames)
+	power_action_block_startup_frames_remaining = maxf(0.0, power_action_block_startup_frames_remaining - float(frames))
+	var progress := 1.0 - (power_action_block_startup_frames_remaining / maxf(1.0, float(power_action_block_startup_frames)))
+	if player != null and player.has_method("show_timeline_phase"):
+		player.show_timeline_phase(power_action_block_defense_type, "STARTUP", clampf(progress, 0.0, 1.0), "", false)
+	if power_action_block_startup_frames_remaining <= 0.0:
+		if player != null and player.has_method("show_timeline_phase"):
+			player.show_timeline_phase(power_action_block_defense_type, "ACTIVE", 1.0, "", false)
+		log_message.emit("BLOCK_ACTIVE: %s." % _defense_display_name(power_action_block_defense_type))
+		_record_combat_event("BLOCK_ACTIVE", "BLOCK_ACTIVE", {
+			"actor": "player",
+			"defense_type": power_action_block_defense_type
+		})
+
+func _current_power_action_block_defense() -> String:
+	if not is_power_action_mode() or not power_action_block_held or power_action_block_startup_frames_remaining > 0.0:
+		return ""
+	return power_action_block_defense_type
+
+func _clear_power_action_block_state() -> void:
+	power_action_block_held = false
+	power_action_block_defense_type = ""
+	power_action_block_startup_frames_remaining = 0.0
+	power_action_block_startup_accumulator = 0.0
+
 func _on_player_defense(defense_type: String) -> void:
 	last_defense = defense_type
 	if _is_enemy_intent_state():
@@ -645,11 +984,18 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	combat_input_router.route_key_event(event, self, get_viewport())
 
 func _run_enemy_attack(start_reaction := true) -> void:
-	if combat_over or frame_advantage > 0 or combat_state_machine.is_enemy_flow_state():
+	if combat_over:
+		return
+	if is_power_action_mode():
+		if _enemy_power_action_locked():
+			_record_power_action_enemy_rejection(_enemy_power_action_reject_reason())
+			return
+	elif frame_advantage > 0 or combat_state_machine.is_enemy_flow_state():
 		return
 	if not fight_started:
 		return
 
+	last_power_action_enemy_reject_reason = ""
 	_exit_slow_neutral()
 	_transition_combat_state(CombatStateMachineScript.State.ENEMY_INTENT, "enemy intent selected")
 	var approach_end_reason := "Enemy reached range" if _distance_between_fighters() <= enemy_intent_range else "Enemy evaluating from spacing"
@@ -672,7 +1018,8 @@ func _run_enemy_attack(start_reaction := true) -> void:
 	attack_in_progress = true
 	waiting_for_defense = true
 	last_defense = ""
-	if start_reaction:
+	var use_reaction_window := start_reaction and not is_power_action_mode()
+	if use_reaction_window:
 		queue_resolver.clear()
 	_reset_pressure_sequence()
 	enemy.start_attack(String(ai_decision.get("action_id", "")))
@@ -688,21 +1035,32 @@ func _run_enemy_attack(start_reaction := true) -> void:
 		return
 	enemy_base_startup_frame = int(enemy_attack_data["startup_frame"])
 	enemy_effective_startup_frame = int(ai_decision.get("effective_startup", frame_system.effective_startup(enemy_base_startup_frame, initiative_offset)))
+	if is_power_action_mode():
+		enemy_effective_startup_frame = maxi(1, int(ceil(float(enemy_effective_startup_frame) * power_action_enemy_startup_multiplier)))
 	if initiative_offset != 0:
 		log_message.emit("Enemy next startup modified by %s." % _signed_int(initiative_offset))
 	initiative_offset = 0
 	remaining_startup_frames = enemy_effective_startup_frame
 	var enemy_move_def: MoveDefinition = hitbox_system.begin_enemy_move(current_enemy_intent, enemy_attack_data, enemy_effective_startup_frame)
 	combat_timeline.begin_from_move("ENEMY", enemy_move_def)
+	_record_action_lifecycle_event("ACTION_STARTUP_BEGIN", {
+		"actor": "enemy",
+		"move_id": current_enemy_intent,
+		"source_type": _action_request_source_name(current_enemy_action_request),
+		"startup_frames": enemy_effective_startup_frame
+	})
 	_show_enemy_timeline_phase()
-	if start_reaction:
+	if use_reaction_window:
 		_start_reaction_window(_enemy_attack_hit_level(current_enemy_intent), enemy_effective_startup_frame)
 		_transition_combat_state(CombatStateMachineScript.State.REACTION_WINDOW, "reaction window started")
+	elif start_reaction and is_power_action_mode():
+		power_action_enemy_startup_frame_accumulator = 0.0
+		log_message.emit("POWER_ACTION enemy startup running in real time: %df." % enemy_effective_startup_frame)
 	last_player_action_startup = 0
 	player.set_free_movement_enabled(false)
 	log_message.emit("Enemy intent: %s." % enemy.current_attack)
 	log_message.emit("%s; starting %s." % [approach_end_reason, enemy.current_attack])
-	log_message.emit("Slow time: react before impact." if start_reaction else "Enemy intent opened for queued action.")
+	log_message.emit("Real-time attack: defend, move, or challenge." if is_power_action_mode() and start_reaction else ("Slow time: react before impact." if start_reaction else "Enemy intent opened for queued action."))
 	frame_advantage_changed.emit(frame_advantage)
 	_update_time_scale()
 
@@ -906,7 +1264,11 @@ func _begin_player_commitment() -> void:
 
 func _start_player_card_action(card: Resource) -> void:
 	_begin_player_action_lifecycle(card)
-	current_player_action_request = ActionRequestScript.from_card("player", card, -1, Engine.get_process_frames())
+	if pending_player_action_request_override != null:
+		current_player_action_request = pending_player_action_request_override
+		pending_player_action_request_override = null
+	else:
+		current_player_action_request = ActionRequestScript.from_card("player", card, -1, Engine.get_process_frames())
 	if player != null and player.has_method("perform_card_action"):
 		player.perform_card_action(card)
 
@@ -963,6 +1325,9 @@ func _player_action_lifecycle_blocks_card_input() -> bool:
 		and not player_action_lifecycle_done \
 		and not player_action_lifecycle_release_authorized
 
+func player_action_visual_locked() -> bool:
+	return (player_action_lifecycle_active and not player_action_lifecycle_done) or player_trade_recovery_frames_remaining > 0.0
+
 func _authorize_player_action_lifecycle_release(reason: String) -> void:
 	if not player_action_lifecycle_active or player_action_lifecycle_done:
 		return
@@ -1006,6 +1371,10 @@ func _finish_player_action_lifecycle(token: int, reason := "recovery_complete") 
 		"reason": reason,
 		"authorized_by": "CombatManager"
 	})
+	_record_action_lifecycle_event("ACTION_DONE", {
+		"actor": "player",
+		"move_id": player_action_lifecycle_action_id
+	})
 	player_action_lifecycle_released.emit(reason)
 
 func _cancel_player_action_lifecycle(reason := "cancelled", finish_visual := false) -> void:
@@ -1026,7 +1395,7 @@ func _cancel_player_action_lifecycle(reason := "cancelled", finish_visual := fal
 		player.finish_action_from_combat_manager(reason)
 	player_action_lifecycle_released.emit(reason)
 
-func _begin_player_trade_recovery_lifecycle(card: Resource, recovery_frames: int) -> void:
+func _begin_player_trade_recovery_lifecycle(card: Resource, recovery_frames: int, action_request = null) -> void:
 	player_action_lifecycle_token += 1
 	player_action_lifecycle_active = true
 	player_action_lifecycle_done = false
@@ -1037,7 +1406,7 @@ func _begin_player_trade_recovery_lifecycle(card: Resource, recovery_frames: int
 	player_action_lifecycle_phase = "TRADE_RECOVERY"
 	player_action_lifecycle_recovery_frames_remaining = float(maxi(0, recovery_frames))
 	player_action_lifecycle_recovery_running = true
-	current_player_action_request = ActionRequestScript.from_card("player", card, -1, Engine.get_process_frames()) if card != null else null
+	current_player_action_request = action_request if action_request != null else (ActionRequestScript.from_card("player", card, -1, Engine.get_process_frames()) if card != null else null)
 	hitbox_system.enter_player_recovery()
 	log_message.emit("Player trade recovery lifecycle started: action=%s card=%s recovery_frames=%d." % [
 		player_action_lifecycle_action_id,
@@ -1121,6 +1490,155 @@ func _tick_reaction_window(delta: float) -> void:
 		_show_enemy_timeline_phase()
 	if bool(result.get("should_resolve", false)):
 		call_deferred("_resolve_reaction_impact")
+
+func _tick_power_action_enemy_intent(delta: float) -> void:
+	if not is_power_action_mode() or combat_over or power_action_enemy_impact_resolving:
+		return
+	if not _is_enemy_intent_state() or _is_reaction_window_state() or remaining_startup_frames <= 0:
+		return
+	power_action_enemy_startup_frame_accumulator += delta * 60.0
+	var frames := int(floor(power_action_enemy_startup_frame_accumulator))
+	if frames <= 0:
+		return
+	power_action_enemy_startup_frame_accumulator -= float(frames)
+	_advance_enemy_startup(frames)
+	if remaining_startup_frames <= 0:
+		_begin_power_action_enemy_active()
+
+func _begin_power_action_enemy_active() -> void:
+	if combat_over or not is_power_action_mode() or not _is_enemy_intent_state():
+		return
+	remaining_startup_frames = 0
+	power_action_enemy_impact_resolving = true
+	_begin_enemy_resolution()
+	power_action_enemy_active_result = enemy.resolve_attack()
+	if power_action_enemy_active_result.is_empty():
+		power_action_enemy_impact_resolving = false
+		_finish_enemy_resolution()
+		return
+	power_action_enemy_active_frames_remaining = float(maxi(1, int(power_action_enemy_active_result.get("active", 1))))
+	power_action_enemy_active_frame_accumulator = 0.0
+	power_action_enemy_active_resolved = false
+	_record_action_lifecycle_event("ACTION_ACTIVE_BEGIN", {
+		"actor": "enemy",
+		"move_id": String(power_action_enemy_active_result.get("id", current_enemy_intent)),
+		"active_frames": int(ceil(power_action_enemy_active_frames_remaining))
+	})
+
+func _tick_power_action_enemy_active(delta: float) -> void:
+	if not is_power_action_mode() or combat_over:
+		return
+	if combat_state_machine == null or combat_state_machine.current_state != CombatStateMachineScript.State.ENEMY_ACTIVE:
+		return
+	if power_action_enemy_active_frames_remaining <= 0.0 or power_action_enemy_active_result.is_empty():
+		return
+	power_action_enemy_active_frame_accumulator += delta * 60.0
+	var frames := int(floor(power_action_enemy_active_frame_accumulator))
+	if frames <= 0:
+		return
+	power_action_enemy_active_frame_accumulator -= float(frames)
+	if not power_action_enemy_active_resolved:
+		power_action_enemy_active_resolved = _check_power_action_enemy_active_overlap()
+	power_action_enemy_active_frames_remaining = maxf(0.0, power_action_enemy_active_frames_remaining - float(frames))
+	if combat_timeline != null and combat_timeline.actor == "ENEMY":
+		combat_timeline.advance_frames(frames)
+		_show_enemy_timeline_phase()
+	if power_action_enemy_active_frames_remaining <= 0.0:
+		_finish_power_action_enemy_active_window()
+
+func _check_power_action_enemy_active_overlap() -> bool:
+	var result: Dictionary = hitbox_system.activate_enemy_attack(power_action_enemy_active_result)
+	var overlaps := bool(result.get("overlaps", false))
+	if combat_timeline.actor == "ENEMY":
+		combat_timeline.mark_active()
+		_show_enemy_timeline_phase()
+	if not overlaps:
+		return false
+	var move_id := String(power_action_enemy_active_result.get("id", current_enemy_intent))
+	var defense_type := _current_power_action_block_defense()
+	if defense_type != "" and _defense_answers_attack(defense_type, power_action_enemy_active_result):
+		hitbox_system.trace_last_check("block")
+		_apply_player_block_stance_damage(power_action_enemy_active_result, StanceDamageResolver.NORMAL_BLOCK, "power_action_block")
+		_reset_pressure_sequence()
+		_change_frame_advantage(1)
+		log_message.emit("POWER_ACTION enemy attack blocked.")
+		_record_combat_event("ACTION_BLOCK", "ACTION_BLOCK", {
+			"actor": "enemy",
+			"target": "player",
+			"move_id": move_id,
+			"defense_type": defense_type
+		})
+	else:
+		hitbox_system.trace_last_check("hit")
+		_apply_player_damage_and_stance(power_action_enemy_active_result, StanceDamageResolver.RAW_HIT, -1, "power_action_enemy_hit")
+		_record_action_lifecycle_event("ACTION_HIT", {
+			"actor": "enemy",
+			"target": "player",
+			"move_id": move_id,
+			"startup_frames": enemy_effective_startup_frame,
+			"active_frame_index": 0,
+			"frame_advantage": frame_advantage,
+			"damage": int(power_action_enemy_active_result.get("damage", 0)),
+			"stance_damage": int(power_action_enemy_active_result.get("stance_damage", 0))
+		})
+		_set_frame_advantage_to_neutral()
+		log_message.emit("POWER_ACTION enemy hit resolved.")
+	return true
+
+func _finish_power_action_enemy_active_window() -> void:
+	if not power_action_enemy_active_resolved:
+		hitbox_system.trace_last_check("whiff")
+		log_message.emit("Enemy attack whiffed due to spacing.")
+		_record_action_lifecycle_event("ACTION_WHIFF", {
+			"actor": "enemy",
+			"move_id": String(power_action_enemy_active_result.get("id", current_enemy_intent))
+		})
+		_reset_pressure_sequence()
+		_change_frame_advantage(1)
+	power_action_enemy_active_result = {}
+	power_action_enemy_active_resolved = false
+	power_action_enemy_active_frames_remaining = 0.0
+	power_action_enemy_active_frame_accumulator = 0.0
+	power_action_enemy_impact_resolving = false
+	_finish_enemy_resolution_after_recovery()
+
+func _resolve_power_action_enemy_impact() -> void:
+	if combat_over or not is_power_action_mode() or not _is_enemy_intent_state():
+		power_action_enemy_impact_resolving = false
+		return
+	remaining_startup_frames = 0
+	await _resolve_power_action_enemy_attack()
+	power_action_enemy_impact_resolving = false
+
+func _resolve_power_action_enemy_attack() -> void:
+	_begin_enemy_resolution()
+	var result: Dictionary = enemy.resolve_attack()
+	if result.is_empty():
+		_finish_enemy_resolution()
+		return
+
+	var enemy_attack_hits := _activate_enemy_attack_hitbox(result)
+	if not enemy_attack_hits:
+		hitbox_system.trace_last_check("whiff")
+		log_message.emit("Enemy attack whiffed due to spacing.")
+		_reset_pressure_sequence()
+		_change_frame_advantage(1)
+	else:
+		hitbox_system.trace_last_check("hit")
+		_apply_player_damage_and_stance(result, StanceDamageResolver.RAW_HIT, -1, "power_action_enemy_hit")
+		_record_action_lifecycle_event("ACTION_HIT", {
+			"actor": "enemy",
+			"target": "player",
+			"move_id": String(result.get("id", current_enemy_intent)),
+			"startup_frames": int(result.get("startup_frame", enemy_base_startup_frame)),
+			"active_frame_index": 0,
+			"frame_advantage": frame_advantage,
+			"damage": int(result.get("damage", 0)),
+			"stance_damage": int(result.get("stance_damage", 0))
+		})
+		_set_frame_advantage_to_neutral()
+		log_message.emit("POWER_ACTION enemy hit resolved.")
+	await _finish_enemy_resolution_after_recovery()
 
 func _reaction_progress() -> float:
 	return reaction_window_system.progress()
@@ -1366,6 +1884,12 @@ func _begin_enemy_resolution() -> void:
 	frame_advantage_changed.emit(frame_advantage)
 
 func _finish_enemy_resolution() -> void:
+	var completed_intent := current_enemy_intent if current_enemy_intent != "" else "unknown"
+	_record_action_lifecycle_event("ACTION_DONE", {
+		"actor": "enemy",
+		"move_id": completed_intent,
+		"recovery_frames_elapsed": int(round(power_action_enemy_recovery_frames_elapsed)) if is_power_action_mode() else 0
+	})
 	enemy.finish_attack()
 	current_enemy_action_request = null
 	combat_timeline.finish_action()
@@ -1373,11 +1897,22 @@ func _finish_enemy_resolution() -> void:
 	enemy.clear_timeline_visual()
 	attack_in_progress = false
 	enemy_action_recovery_frames_remaining = 0.0
+	power_action_enemy_active_frames_remaining = 0.0
+	power_action_enemy_active_frame_accumulator = 0.0
+	power_action_enemy_active_result = {}
+	power_action_enemy_active_resolved = false
+	power_action_enemy_recovery_frames_elapsed = 0.0
+	power_action_enemy_impact_resolving = false
+	power_action_enemy_recovery_frames_elapsed = 0.0
 	player.set_free_movement_enabled(false)
 	current_enemy_intent = ""
 	enemy_base_startup_frame = 0
 	enemy_effective_startup_frame = 0
 	remaining_startup_frames = 0
+	if is_power_action_mode():
+		power_action_enemy_decision_cooldown_remaining = float(power_action_enemy_decision_cooldown_frames)
+		last_power_action_enemy_reject_reason = ""
+		log_message.emit("POWER_ACTION enemy decision cooldown started: %df after %s." % [power_action_enemy_decision_cooldown_frames, completed_intent])
 	_update_time_scale()
 	if _player_reward_window_active():
 		_enter_player_reward_window("enemy recovery complete")
@@ -1387,11 +1922,23 @@ func _finish_enemy_resolution() -> void:
 
 func _finish_enemy_resolution_after_recovery() -> void:
 	_transition_combat_state(CombatStateMachineScript.State.ENEMY_RECOVERY, "enemy recovery")
-	enemy_action_recovery_frames_remaining = float(int(round(ATTACK_RECOVERY * 60.0)))
+	enemy_action_recovery_frames_remaining = float(_current_enemy_recovery_frames())
+	if is_power_action_mode():
+		enemy_action_recovery_frames_remaining = maxf(1.0, ceil(enemy_action_recovery_frames_remaining * power_action_enemy_recovery_multiplier))
+		power_action_enemy_recovery_frames_elapsed = 0.0
 	log_message.emit("ENEMY_RECOVERY set: recovery_frames=%d intent=%s." % [int(ceil(enemy_action_recovery_frames_remaining)), current_enemy_intent if current_enemy_intent != "" else "None"])
 	hitbox_system.enter_enemy_recovery()
 	combat_timeline.mark_recovery()
+	_record_action_lifecycle_event("ACTION_RECOVERY_BEGIN", {
+		"actor": "enemy",
+		"move_id": current_enemy_intent if current_enemy_intent != "" else "unknown",
+		"recovery_frames": int(ceil(enemy_action_recovery_frames_remaining))
+	})
 	_show_enemy_timeline_phase()
+	if is_power_action_mode():
+		power_action_enemy_recovery_frame_accumulator = 0.0
+		_update_time_scale()
+		return
 	advance_combat_frames(int(round(ATTACK_RECOVERY * 60.0)))
 	await get_tree().create_timer(ATTACK_RECOVERY).timeout
 	_finish_enemy_resolution()
@@ -1450,6 +1997,11 @@ func end_player_pressure(reason: String, initiative_result := 0) -> void:
 	player_trade_recovery_frames_remaining = 0.0
 	enemy_trade_recovery_frames_remaining = 0.0
 	enemy_action_recovery_frames_remaining = 0.0
+	power_action_enemy_active_frames_remaining = 0.0
+	power_action_enemy_active_result = {}
+	power_action_enemy_active_resolved = false
+	power_action_enemy_recovery_frames_elapsed = 0.0
+	_clear_power_action_block_state()
 	pending_trade_followup_window = false
 	queue_resolver.clear()
 	waiting_for_defense = false
@@ -1676,6 +2228,99 @@ func _try_interrupt_with_card_snapshot(snapshot: Dictionary) -> void:
 	log_message.emit("Challenge wins.")
 	await _resolve_player_card(played_card, 2, false, true, false, false, false)
 
+func _try_interrupt_with_direct_card(card: Resource, request) -> void:
+	_begin_player_commitment()
+	if reaction_window_system.active:
+		reaction_window_system.start_challenge()
+		reaction_window_system.deactivate()
+	last_player_action_startup = int(card.startup_frame)
+	log_message.emit("Player challenge startup: %d." % last_player_action_startup)
+	log_message.emit("Enemy impact remaining: %d." % remaining_startup_frames)
+	pending_player_action_request_override = request
+	_start_player_card_action(card)
+	_begin_player_card_timeline(card)
+	var enemy_startup_after_card := remaining_startup_frames - int(card.startup_frame)
+	_advance_player_action_frames(int(card.startup_frame), false, false)
+
+	if int(card.startup_frame) > remaining_startup_frames:
+		log_message.emit("Challenge loses.")
+		log_message.emit("Interrupt failed: too slow.")
+		_cancel_player_action_lifecycle("direct_challenge_too_slow", false)
+		_resolve_enemy_counter_hit(true)
+		return
+	if not _card_would_hit_enemy_after_movement(card):
+		log_message.emit("Challenge loses.")
+		_move_player_by_card(card)
+		_clamp_duel_distance()
+		await _wait_for_player_hit_confirm(card)
+		_activate_player_card_hitbox(card)
+		_complete_player_card_timeline(card)
+		log_message.emit("Interrupt failed: out of range.")
+		log_message.emit("Direct action whiffed: no active hitbox overlap.")
+		remaining_startup_frames = enemy_startup_after_card
+		if remaining_startup_frames <= 0:
+			await _resolve_enemy_impact_after_countdown("direct_action_whiff")
+		else:
+			frame_advantage_changed.emit(frame_advantage)
+			_update_time_scale()
+		return
+
+	waiting_for_defense = false
+	attack_in_progress = false
+	remaining_startup_frames = enemy_startup_after_card
+	_move_player_by_card(card)
+	_clamp_duel_distance()
+	await _wait_for_player_hit_confirm(card)
+	if not _activate_player_card_hitbox(card):
+		_complete_player_card_timeline(card)
+		log_message.emit("Interrupt failed: out of range.")
+		log_message.emit("Direct action whiffed: no active hitbox overlap.")
+		remaining_startup_frames = enemy_startup_after_card
+		if remaining_startup_frames <= 0:
+			await _resolve_enemy_impact_after_countdown("direct_action_whiff")
+		else:
+			frame_advantage_changed.emit(frame_advantage)
+			_update_time_scale()
+		return
+	Engine.time_scale = 1.0
+	frame_advantage_changed.emit(frame_advantage)
+	player.set_free_movement_enabled(false)
+	var interrupted_intent := current_enemy_intent
+	_cancel_enemy_pending_attack_for_interrupt("player", "enemy", String(card.id), interrupted_intent)
+	log_message.emit("%s interrupted %s." % [card.display_name, interrupted_intent])
+	log_message.emit("Challenge wins.")
+	pending_player_action_request_override = request
+	await _resolve_player_card(card, 2, false, false, false, false, false, "direct_input")
+
+func _cancel_enemy_pending_attack_for_interrupt(attacker_id: String, target_id: String, attacker_move_id: String, interrupted_move: String) -> void:
+	_record_action_lifecycle_event("INTERRUPT", {
+		"actor": attacker_id,
+		"attacker": attacker_id,
+		"target": target_id,
+		"move_id": attacker_move_id,
+		"interrupted_move": interrupted_move,
+		"target_state": combat_state_machine.state_name() if combat_state_machine != null else "unknown"
+	})
+	attack_in_progress = false
+	waiting_for_defense = false
+	current_enemy_intent = ""
+	current_enemy_action_request = null
+	enemy_base_startup_frame = 0
+	enemy_effective_startup_frame = 0
+	remaining_startup_frames = 0
+	enemy_action_recovery_frames_remaining = 0.0
+	power_action_enemy_startup_frame_accumulator = 0.0
+	power_action_enemy_recovery_frame_accumulator = 0.0
+	power_action_enemy_active_frame_accumulator = 0.0
+	power_action_enemy_active_frames_remaining = 0.0
+	power_action_enemy_active_result = {}
+	power_action_enemy_active_resolved = false
+	power_action_enemy_impact_resolving = false
+	power_action_enemy_decision_cooldown_remaining = 0.0
+	hitbox_system.finish_enemy_move()
+	if enemy.has_method("clear_intent"):
+		enemy.clear_intent()
+
 func _resolve_intent_trade(index: int, preview_card: Resource, enemy_startup_after_card: int) -> void:
 	var result: Dictionary = enemy.resolve_attack()
 	if result.is_empty():
@@ -1709,6 +2354,37 @@ func _resolve_intent_trade(index: int, preview_card: Resource, enemy_startup_aft
 	log_message.emit("Trade occurred.")
 	log_message.emit("%s traded with %s." % [card.display_name, traded_intent])
 	_apply_trade_frame_result(card)
+
+func _resolve_intent_trade_direct(card: Resource, enemy_startup_after_card: int) -> void:
+	var result: Dictionary = enemy.resolve_attack()
+	if result.is_empty():
+		return
+
+	waiting_for_defense = false
+	attack_in_progress = false
+	remaining_startup_frames = maxi(0, enemy_startup_after_card)
+	Engine.time_scale = 1.0
+	var enemy_attack_hits := _activate_enemy_attack_hitbox(result)
+	_apply_hit_stance_damage(card, "direct_trade")
+	_complete_player_card_timeline(card)
+	if enemy_attack_hits:
+		hitbox_system.trace_last_check("trade")
+		_apply_player_damage_and_stance(result, StanceDamageResolver.RAW_HIT, -1, "direct_trade_enemy_hit")
+	else:
+		hitbox_system.trace_last_check("whiff")
+		log_message.emit("Enemy trade hitbox had no overlap.")
+	player.set_free_movement_enabled(false)
+	var traded_intent := current_enemy_intent
+	current_enemy_intent = ""
+	enemy_base_startup_frame = 0
+	enemy_effective_startup_frame = 0
+	remaining_startup_frames = 0
+	if enemy.has_method("clear_intent"):
+		enemy.clear_intent()
+	log_message.emit("Trade occurred.")
+	log_message.emit("%s traded with %s." % [card.display_name, traded_intent])
+	_record_card_action_event(card, "trade", "direct_input")
+	_apply_trade_frame_result(card, current_player_action_request)
 
 func _resolve_intent_trade_snapshot(snapshot: Dictionary, preview_card: Resource, enemy_startup_after_card: int) -> void:
 	var result: Dictionary = enemy.resolve_attack()
@@ -1775,14 +2451,14 @@ func _resolve_enemy_counter_hit(counter_hit := true) -> void:
 	_update_time_scale()
 	_enter_slow_neutral("Slow neutral movement started.")
 
-func _apply_trade_frame_result(card: Resource) -> void:
+func _apply_trade_frame_result(card: Resource, action_request = null) -> void:
 	queue_resolver.interrupted_by_trade = true
 	queue_resolver.clear()
 	var trade_result: Dictionary = trade_system.resolve_post_trade(card)
 	var player_recovery := int(trade_result["player_recovery"])
 	var enemy_recovery := int(trade_result["enemy_recovery"])
 	var post_trade_frame_advantage := int(trade_result["post_trade_frame_advantage"])
-	_begin_player_trade_recovery_lifecycle(card, player_recovery)
+	_begin_player_trade_recovery_lifecycle(card, player_recovery, action_request)
 	player_trade_recovery_frames_remaining = float(player_recovery)
 	enemy_trade_recovery_frames_remaining = float(enemy_recovery)
 	pending_trade_followup_window = post_trade_frame_advantage > 0
@@ -1901,7 +2577,7 @@ func _resolve_pressure_card_snapshot(snapshot: Dictionary) -> void:
 		return
 	_resolve_card_frame_advantage(frame_delta)
 
-func _resolve_player_card(card: Resource, bonus_frame_advantage := 0, apply_movement := true, route_valid := true, starts_new_route := false, start_animation := true, wait_for_hit_confirm := true) -> void:
+func _resolve_player_card(card: Resource, bonus_frame_advantage := 0, apply_movement := true, route_valid := true, starts_new_route := false, start_animation := true, wait_for_hit_confirm := true, event_source := "player_card") -> void:
 	_begin_player_commitment()
 	log_message.emit("Card played: %s." % card.display_name)
 	if start_animation:
@@ -1921,7 +2597,7 @@ func _resolve_player_card(card: Resource, bonus_frame_advantage := 0, apply_move
 	if not _activate_player_card_hitbox(card):
 		log_message.emit("Card whiffed: no active hitbox overlap.")
 		log_message.emit("No follow-up draw: card did not connect.")
-		_record_card_action_event(card, "whiff", "player_card")
+		_record_card_action_event(card, "whiff", event_source)
 		_complete_player_card_timeline(card)
 		_resolve_card_frame_advantage(card.whiff_frame_penalty)
 		return
@@ -1936,7 +2612,7 @@ func _resolve_player_card(card: Resource, bonus_frame_advantage := 0, apply_move
 	else:
 		log_message.emit("Combo route broken.")
 	_log_card_hit_summary(card, stance_protected)
-	_record_card_action_event(card, "hit", "player_card")
+	_record_card_action_event(card, "hit", event_source)
 	_complete_player_card_timeline(card)
 	if bool(repeat_info["force_end"]):
 		end_player_pressure("Repeated route exhausted.", mini(frame_delta, -1))
@@ -1954,9 +2630,12 @@ func _log_enemy_pressure_reaction(card: Resource, repeat_info: Dictionary) -> vo
 
 func _resolve_card_frame_advantage(delta: int) -> void:
 	var previous := frame_advantage
+	var previous_enemy_vulnerable := enemy_vulnerable_frames_remaining
 	var final_frame_advantage: int = frame_system.apply_advantage_delta(delta, frame_advantage)
 	frame_advantage = final_frame_advantage
 	enemy_vulnerable_frames_remaining = maxi(0, frame_advantage)
+	if is_power_action_mode():
+		enemy_vulnerable_frames_remaining = maxi(enemy_vulnerable_frames_remaining, previous_enemy_vulnerable)
 	frame_advantage_changed.emit(frame_advantage)
 
 	if frame_advantage > previous:
@@ -2133,12 +2812,31 @@ func _activate_player_card_hitbox(card: Resource) -> bool:
 	if combat_timeline.actor == "PLAYER":
 		combat_timeline.mark_active()
 		_show_player_timeline_phase()
+	_record_action_lifecycle_event("ACTION_ACTIVE_BEGIN", {
+		"actor": "player",
+		"move_id": String(card.id),
+		"active_frames": maxi(1, int(card.active_end_frame) - int(card.active_start_frame) + 1)
+	})
 	var outcome := "hit" if overlaps else "whiff"
 	hitbox_system.trace_last_check(outcome)
 	if overlaps:
 		log_message.emit("%s active hitbox overlapped enemy hurtbox." % card.display_name)
+		_record_action_lifecycle_event("ACTION_HIT", {
+			"actor": "player",
+			"target": "enemy",
+			"move_id": String(card.id),
+			"startup_frames": int(card.startup_frame),
+			"active_frame_index": maxi(0, int(card.hit_frame) - int(card.active_start_frame)),
+			"frame_advantage": frame_advantage,
+			"damage": int(card.damage),
+			"stance_damage": int(card.stance_damage)
+		})
 	else:
 		log_message.emit("%s active hitbox had no overlap." % card.display_name)
+		_record_action_lifecycle_event("ACTION_WHIFF", {
+			"actor": "player",
+			"move_id": String(card.id)
+		})
 	return overlaps
 
 func _activate_enemy_attack_hitbox(attack_data: Dictionary) -> bool:
@@ -2147,10 +2845,19 @@ func _activate_enemy_attack_hitbox(attack_data: Dictionary) -> bool:
 	if combat_timeline.actor == "ENEMY":
 		combat_timeline.mark_active()
 		_show_enemy_timeline_phase()
+	_record_action_lifecycle_event("ACTION_ACTIVE_BEGIN", {
+		"actor": "enemy",
+		"move_id": String(attack_data.get("id", current_enemy_intent)),
+		"active_frames": int(attack_data.get("active", 1))
+	})
 	if overlaps:
 		log_message.emit("%s active hitbox overlapped player hurtbox." % String(attack_data.get("name", attack_data.get("id", "Enemy attack"))))
 	else:
 		log_message.emit("%s active hitbox had no overlap." % String(attack_data.get("name", attack_data.get("id", "Enemy attack"))))
+		_record_action_lifecycle_event("ACTION_WHIFF", {
+			"actor": "enemy",
+			"move_id": String(attack_data.get("id", current_enemy_intent))
+		})
 	return overlaps
 
 func _set_player_attack_hitbox(hitbox: Rect2) -> void:
@@ -2177,6 +2884,11 @@ func _complete_player_card_timeline(card: Resource) -> void:
 	hitbox_system.enter_player_recovery()
 	combat_timeline.mark_recovery()
 	_apply_timeline_visual()
+	_record_action_lifecycle_event("ACTION_RECOVERY_BEGIN", {
+		"actor": "player",
+		"move_id": String(card.id) if card != null else "unknown",
+		"recovery_frames": int(card.frame_cost) if card != null else 0
+	})
 	_set_player_action_lifecycle_phase("RECOVERY", "hit_resolution_complete")
 	_start_player_action_recovery_lifecycle(card)
 
@@ -2209,6 +2921,12 @@ func _begin_player_card_timeline(card: Resource) -> void:
 	_transition_combat_state(CombatStateMachineScript.State.EXECUTING_PLAYER_ACTION, "player action: %s" % card.id)
 	var move_def: MoveDefinition = hitbox_system.begin_player_move(card)
 	combat_timeline.begin_from_move("PLAYER", move_def)
+	_record_action_lifecycle_event("ACTION_STARTUP_BEGIN", {
+		"actor": "player",
+		"move_id": String(card.id),
+		"source_type": _action_request_source_name(current_player_action_request),
+		"startup_frames": int(card.startup_frame)
+	})
 	_set_player_action_lifecycle_phase("STARTUP", "timeline_begin")
 	_show_player_timeline_phase()
 
@@ -2352,9 +3070,50 @@ func _tick_trade_recovery(delta: float) -> void:
 	_tick_trade_recovery_frames(delta * 60.0)
 
 func _tick_enemy_action_recovery(delta: float) -> void:
+	if is_power_action_mode():
+		return
 	if enemy_action_recovery_frames_remaining <= 0.0:
 		return
 	enemy_action_recovery_frames_remaining = maxf(0.0, enemy_action_recovery_frames_remaining - delta * 60.0)
+
+func _tick_power_action_enemy_recovery(delta: float) -> void:
+	if not is_power_action_mode() or combat_over:
+		return
+	if combat_state_machine == null or combat_state_machine.current_state != CombatStateMachineScript.State.ENEMY_RECOVERY:
+		return
+	if enemy_action_recovery_frames_remaining <= 0.0:
+		return
+	power_action_enemy_recovery_frame_accumulator += delta * 60.0
+	var frames := int(floor(power_action_enemy_recovery_frame_accumulator))
+	if frames <= 0:
+		return
+	power_action_enemy_recovery_frame_accumulator -= float(frames)
+	enemy_action_recovery_frames_remaining = maxf(0.0, enemy_action_recovery_frames_remaining - float(frames))
+	power_action_enemy_recovery_frames_elapsed += float(frames)
+	if combat_timeline != null and combat_timeline.actor == "ENEMY":
+		combat_timeline.advance_frames(frames)
+		_show_enemy_timeline_phase()
+	if enemy_action_recovery_frames_remaining <= 0.0:
+		_finish_enemy_resolution()
+
+func _tick_power_action_enemy_decision_cooldown(delta: float) -> void:
+	if not is_power_action_mode() or power_action_enemy_decision_cooldown_remaining <= 0.0:
+		return
+	power_action_enemy_decision_cooldown_remaining = maxf(0.0, power_action_enemy_decision_cooldown_remaining - delta * 60.0)
+	if power_action_enemy_decision_cooldown_remaining <= 0.0:
+		last_power_action_enemy_reject_reason = ""
+
+func _tick_power_action_enemy_hitstun(delta: float) -> void:
+	if not is_power_action_mode() or enemy_vulnerable_frames_remaining <= 0:
+		return
+	power_action_enemy_hitstun_frame_accumulator += delta * 60.0
+	var frames := int(floor(power_action_enemy_hitstun_frame_accumulator))
+	if frames <= 0:
+		return
+	power_action_enemy_hitstun_frame_accumulator -= float(frames)
+	enemy_vulnerable_frames_remaining = maxi(0, enemy_vulnerable_frames_remaining - frames)
+	if enemy_vulnerable_frames_remaining <= 0:
+		last_power_action_enemy_reject_reason = ""
 
 func _tick_trade_recovery_frames(frames: float) -> void:
 	if frames <= 0.0:
@@ -2515,6 +3274,8 @@ func _log_stance_protection(amount: int) -> void:
 
 func _apply_player_damage_and_stance(attack_result: Dictionary, hit_result: String, damage_override := -1, event_source := "enemy_attack") -> Dictionary:
 	var damage := damage_override if damage_override >= 0 else int(attack_result.get("damage", 0))
+	if is_power_action_mode():
+		_clear_power_action_block_state()
 	player.take_damage(damage)
 	return _apply_stance_damage_to_actor(player, int(attack_result.get("stance_damage", 0)), hit_result, event_source)
 
@@ -2555,8 +3316,24 @@ func _log_stance_damage_result(result: Dictionary) -> void:
 
 func _apply_hit_stance_damage(card: Resource, event_source := "card_hit") -> bool:
 	enemy.take_hit(card.damage, 0)
+	_apply_power_action_enemy_hitstun(card)
 	var result := _apply_stance_damage_to_actor(enemy, card.stance_damage, StanceDamageResolver.RAW_HIT, event_source)
 	return bool(result.get("stance_protected", false))
+
+func _apply_power_action_enemy_hitstun(card: Resource) -> void:
+	if not is_power_action_mode() or card == null:
+		return
+	var interrupted_move := current_enemy_intent
+	var should_cancel_pending := current_enemy_intent != "" or attack_in_progress or waiting_for_defense or enemy_action_recovery_frames_remaining > 0.0
+	if interrupted_move == "" and enemy_action_recovery_frames_remaining > 0.0:
+		interrupted_move = "enemy_recovery"
+	if should_cancel_pending:
+		_cancel_enemy_pending_attack_for_interrupt("player", "enemy", String(card.id), interrupted_move)
+	enemy_vulnerable_frames_remaining = maxi(enemy_vulnerable_frames_remaining, power_action_enemy_hitstun_frames)
+	power_action_enemy_hitstun_frame_accumulator = 0.0
+	power_action_enemy_decision_cooldown_remaining = 0.0
+	last_power_action_enemy_reject_reason = ""
+	log_message.emit("POWER_ACTION enemy hitstun set: %df from %s." % [power_action_enemy_hitstun_frames, card.display_name])
 
 func _apply_block_stance_damage(amount: int, event_source := "block") -> bool:
 	var result := _apply_stance_damage_to_actor(enemy, amount, StanceDamageResolver.PERFECT_BLOCK_REWARD, event_source)
@@ -2866,12 +3643,61 @@ func _enemy_has_active_recovery() -> bool:
 		return true
 	return false
 
+func _enemy_power_action_locked() -> bool:
+	return attack_in_progress \
+		or waiting_for_defense \
+		or current_enemy_intent != "" \
+		or power_action_enemy_decision_cooldown_remaining > 0.0 \
+		or _enemy_recovery_frames_remaining() > 0 \
+		or enemy_vulnerable_frames_remaining > 0 \
+		or _enemy_break_frames_remaining() > 0 \
+		or not enemy.can_act()
+
+func _enemy_power_action_reject_reason() -> String:
+	if combat_state_machine != null and combat_state_machine.current_state == CombatStateMachineScript.State.ENEMY_ACTIVE:
+		return "already_active"
+	if _enemy_recovery_frames_remaining() > 0:
+		return "recovery"
+	if waiting_for_defense or current_enemy_intent != "":
+		return "startup"
+	if power_action_enemy_decision_cooldown_remaining > 0.0:
+		return "decision_cooldown"
+	if attack_in_progress:
+		return "already_active"
+	if enemy_vulnerable_frames_remaining > 0:
+		return "enemy_hitstun"
+	if _enemy_break_frames_remaining() > 0:
+		return "blockstun"
+	if not enemy.can_act():
+		return "interrupted"
+	return "state_locked"
+
+func _record_power_action_enemy_rejection(reason: String, move_id := "") -> void:
+	if reason == "" or reason == last_power_action_enemy_reject_reason:
+		return
+	last_power_action_enemy_reject_reason = reason
+	_record_rejected_action("enemy", reason, move_id)
+
+func _current_enemy_recovery_frames() -> int:
+	var attack_data := _enemy_attack_data(current_enemy_intent)
+	if not attack_data.is_empty():
+		return maxi(1, int(attack_data.get("recovery", int(round(ATTACK_RECOVERY * 60.0)))))
+	return int(round(ATTACK_RECOVERY * 60.0))
+
 func _clear_stale_enemy_recovery() -> void:
 	attack_in_progress = false
 	punish_in_progress = false
 	waiting_for_defense = false
 	current_enemy_action_request = null
 	enemy_action_recovery_frames_remaining = 0.0
+	power_action_enemy_decision_cooldown_remaining = 0.0
+	power_action_enemy_hitstun_frame_accumulator = 0.0
+	power_action_enemy_active_frame_accumulator = 0.0
+	power_action_enemy_active_frames_remaining = 0.0
+	power_action_enemy_active_result = {}
+	power_action_enemy_active_resolved = false
+	power_action_enemy_impact_resolving = false
+	power_action_enemy_recovery_frames_elapsed = 0.0
 	current_enemy_intent = ""
 	remaining_startup_frames = 0
 	enemy_base_startup_frame = 0
@@ -3036,7 +3862,7 @@ func _execute_slow_neutral_queue() -> void:
 			break
 		await _pause_between_queued_actions()
 	_set_queue_resolving(false, "slow neutral queue complete")
-	if _is_enemy_intent_state() and not _is_reaction_window_state() and not combat_over:
+	if _is_enemy_intent_state() and not _is_reaction_window_state() and not combat_over and not is_power_action_mode():
 		_start_reaction_window(current_enemy_intent, remaining_startup_frames)
 		_transition_combat_state(CombatStateMachineScript.State.REACTION_WINDOW, "reaction window started after queue")
 		_update_time_scale()
@@ -3145,6 +3971,10 @@ func _schedule_enemy_if_needed() -> void:
 
 func _update_time_scale() -> void:
 	if combat_over:
+		Engine.time_scale = 1.0
+		return
+	if is_power_action_mode():
+		player.set_free_movement_enabled(false)
 		Engine.time_scale = 1.0
 		return
 

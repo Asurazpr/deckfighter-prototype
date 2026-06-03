@@ -81,7 +81,7 @@ func enter(message := "") -> void:
 	player.set_free_movement_enabled(false)
 	if player is CharacterBody2D:
 		player.velocity.x = 0.0
-	Engine.time_scale = neutral_time_scale
+	Engine.time_scale = 1.0 if _power_action_mode() else neutral_time_scale
 	if message != "" and not was_active:
 		manager.log_message.emit(message)
 
@@ -289,6 +289,8 @@ func _movement_pose_for_direction(direction: float) -> String:
 	return "step_forward" if signf(direction) == signf(movement_system.direction_to_enemy()) else "backstep"
 
 func _show_player_step_pose() -> void:
+	if _player_action_visual_locked():
+		return
 	var phase_name := "STARTUP"
 	var phase_total := BASIC_STEP_STARTUP_FRAMES
 	if movement_phase == STEP_PHASE_TRAVEL:
@@ -304,6 +306,8 @@ func _show_player_step_pose() -> void:
 		_show_actor_pose(player, movement_pose, phase_name, progress)
 
 func _show_player_jump_pose() -> void:
+	if _player_action_visual_locked():
+		return
 	var phase_name := "STARTUP"
 	var phase_total := BASIC_JUMP_STARTUP_FRAMES
 	if jump_phase == STEP_PHASE_TRAVEL:
@@ -318,6 +322,8 @@ func _show_player_jump_pose() -> void:
 func _show_player_idle_pose() -> void:
 	if _player_jump_active():
 		return
+	if _player_action_visual_locked():
+		return
 	if player != null and player.has_method("clear_live_locomotion_visual"):
 		player.clear_live_locomotion_visual()
 		return
@@ -327,6 +333,12 @@ func _show_player_idle_pose() -> void:
 func _show_actor_pose(actor: Node, action_name: String, phase_name: String, progress: float) -> void:
 	if actor != null and actor.has_method("show_timeline_phase"):
 		actor.show_timeline_phase(action_name, phase_name, clampf(progress, 0.0, 1.0), "", false)
+
+func _player_action_visual_locked() -> bool:
+	return manager != null and manager.has_method("player_action_visual_locked") and manager.player_action_visual_locked()
+
+func _power_action_mode() -> bool:
+	return manager != null and manager.has_method("is_power_action_mode") and manager.is_power_action_mode()
 
 func _reset_player_step() -> void:
 	movement_phase = STEP_PHASE_IDLE
@@ -375,6 +387,8 @@ func _clear_player_locomotion_visual() -> void:
 		player.clear_live_locomotion_visual()
 
 func _advance_combat_time(delta: float) -> void:
+	if _power_action_mode():
+		return
 	_frame_accumulator += delta * 60.0
 	var whole_frames := int(floor(_frame_accumulator))
 	if whole_frames <= 0:

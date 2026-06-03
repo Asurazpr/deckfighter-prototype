@@ -23,6 +23,17 @@ static func from_card(actor_id: String, card: Resource, queued_index := -1, inpu
 	request.payload = {"display_name": card.display_name if card != null else ""}
 	return request
 
+static func from_direct_input(actor_id: String, action_id: String, input_name := "", input_frame := 0, priority := 0, payload := {}):
+	var request := new()
+	request.actor_id = actor_id
+	request.action_id = action_id
+	request.source_type = SourceType.DIRECT_INPUT
+	request.input_frame = input_frame
+	request.priority = priority
+	request.payload = payload.duplicate(true) if payload is Dictionary else {}
+	request.payload["input_name"] = input_name
+	return request
+
 static func from_dictionary(data: Dictionary):
 	var request := new()
 	request.actor_id = String(data.get("actor_id", ""))
