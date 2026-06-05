@@ -3505,8 +3505,13 @@ func _update_actor_combat_states() -> void:
 func _queue_is_resolving() -> bool:
 	return queue_resolver != null and queue_resolver.resolving
 
+func _player_queue_action_in_flight() -> bool:
+	return queued_action_in_progress \
+		or current_player_action_request != null \
+		or (player_action_lifecycle_controller != null and player_action_lifecycle_controller.active and not player_action_lifecycle_controller.done)
+
 func _queue_has_pending_action() -> bool:
-	return queue_resolver != null and (queued_action_in_progress or not queue_resolver.is_empty())
+	return queue_resolver != null and (_player_queue_action_in_flight() or not queue_resolver.is_empty())
 
 func _queued_followup_card_pending() -> bool:
 	return queue_resolver != null and queue_resolver.resolving and not queue_resolver.is_empty() and String(queue_resolver.queue.front().get("type", "")) == "CARD"
@@ -3514,7 +3519,7 @@ func _queued_followup_card_pending() -> bool:
 func _is_stale_executing_queue_state() -> bool:
 	return combat_state_machine != null \
 		and combat_state_machine.current_state == CombatStateMachineScript.State.EXECUTING_QUEUE \
-		and (not _queue_is_resolving() or not _queue_has_pending_action())
+		and not _queue_has_pending_action()
 
 func _warn_state_repair(message: String) -> void:
 	if message == last_state_repair_warning:
@@ -3615,6 +3620,14 @@ func _player_has_stale_action_without_request() -> bool:
 	if action_state == "NEUTRAL" or action_state == "":
 		return false
 	if action_state.begins_with("BLOCK"):
+		return false
+	var phase := String(debug.get("phase", "DONE"))
+	var animation_key := String(debug.get("animation_key", "idle")).to_lower()
+	var action_name := String(debug.get("action_name", "None")).to_lower()
+	var visual_action_in_progress := phase != "DONE" \
+		or (animation_key != "idle" and animation_key != "none") \
+		or (action_name != "none" and action_name != "")
+	if visual_action_in_progress:
 		return false
 	return not _queue_is_resolving() and not queued_action_in_progress
 
@@ -3838,7 +3851,7 @@ func _set_queue_resolving(enabled: bool, reason := "") -> void:
 	queue_resolver.resolving = enabled
 	if enabled:
 		_transition_combat_state(CombatStateMachineScript.State.EXECUTING_QUEUE, reason if reason != "" else "queue execution")
-		if combat_state_machine.current_actor() == "none" or not _queue_has_pending_action():
+		if not _queue_has_pending_action():
 			_warn_state_repair("EXECUTING_QUEUE entered without an active queued action.")
 	else:
 		queued_action_in_progress = false
