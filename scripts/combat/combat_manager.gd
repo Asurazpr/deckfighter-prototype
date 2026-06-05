@@ -3331,24 +3331,8 @@ func _tick_enemy_action_recovery(delta: float) -> void:
 		_finish_enemy_resolution("recovery_complete")
 
 func _tick_power_action_enemy_recovery(delta: float) -> void:
-	if not is_power_action_mode() or combat_over:
-		return
-	if combat_state_machine == null or combat_state_machine.current_state != CombatStateMachineScript.State.ENEMY_RECOVERY:
-		return
-	if enemy_action_recovery_frames_remaining <= 0.0:
-		return
-	var tick: Dictionary = _consume_gameplay_frames(delta, power_action_enemy_recovery_frame_accumulator)
-	power_action_enemy_recovery_frame_accumulator = float(tick.get("accumulator", power_action_enemy_recovery_frame_accumulator))
-	var frames := int(tick.get("frames", 0))
-	if frames <= 0:
-		return
-	enemy_action_recovery_frames_remaining = maxf(0.0, enemy_action_recovery_frames_remaining - float(frames))
-	power_action_enemy_recovery_frames_elapsed += float(frames)
-	if combat_timeline != null and combat_timeline.actor == "ENEMY":
-		combat_timeline.advance_frames(frames)
-		_show_enemy_timeline_phase()
-	if enemy_action_recovery_frames_remaining <= 0.0:
-		_finish_enemy_resolution("recovery_complete")
+	if power_fighting_mode_controller != null:
+		power_fighting_mode_controller.tick_enemy_recovery(delta)
 
 func _tick_power_action_enemy_decision_cooldown(delta: float) -> void:
 	if not is_power_action_mode() or power_action_enemy_decision_cooldown_remaining <= 0.0:
@@ -3359,81 +3343,26 @@ func _tick_power_action_enemy_decision_cooldown(delta: float) -> void:
 		last_power_action_enemy_reject_reason = ""
 
 func _tick_power_action_enemy_hitstun(delta: float) -> void:
-	if not is_power_action_mode() or enemy_vulnerable_frames_remaining <= 0:
-		return
-	var tick: Dictionary = _consume_gameplay_frames(delta, power_action_enemy_hitstun_frame_accumulator)
-	power_action_enemy_hitstun_frame_accumulator = float(tick.get("accumulator", power_action_enemy_hitstun_frame_accumulator))
-	var frames := int(tick.get("frames", 0))
-	if frames <= 0:
-		return
-	enemy_vulnerable_frames_remaining = maxi(0, enemy_vulnerable_frames_remaining - frames)
-	if enemy_vulnerable_frames_remaining <= 0:
-		last_power_action_enemy_reject_reason = ""
+	if power_fighting_mode_controller != null:
+		power_fighting_mode_controller.tick_enemy_hitstun(delta)
 
 func _tick_power_action_player_recovery(delta: float) -> void:
-	if not is_power_action_mode() or combat_over:
-		return
-	if not player_action_lifecycle_active or not player_action_lifecycle_recovery_running:
-		return
-	if player_action_lifecycle_recovery_frames_remaining <= 0.0:
-		return
-	var tick: Dictionary = _consume_gameplay_frames(delta, power_action_player_recovery_frame_accumulator)
-	power_action_player_recovery_frame_accumulator = float(tick.get("accumulator", power_action_player_recovery_frame_accumulator))
-	var frames := int(tick.get("frames", 0))
-	if frames <= 0:
-		return
-	player_action_lifecycle_recovery_frames_remaining = maxf(0.0, player_action_lifecycle_recovery_frames_remaining - float(frames))
-	if player_action_lifecycle_recovery_frames_remaining <= 0.0:
-		_finish_player_action_lifecycle(player_action_lifecycle_token, "recovery_complete")
+	if power_fighting_mode_controller != null:
+		power_fighting_mode_controller.tick_player_recovery(delta)
 
 func _update_power_action_live_frame_advantage() -> void:
-	if not is_power_action_mode() or combat_over:
-		return
-	var player_lock_frames := _power_action_player_lock_frames()
-	var enemy_lock_frames := _power_action_enemy_lock_frames()
-	var live_advantage := 0
-	if player_lock_frames > 0 or enemy_lock_frames > 0:
-		live_advantage = enemy_lock_frames - player_lock_frames
-	if live_advantage == frame_advantage:
-		return
-	var previous := frame_advantage
-	frame_advantage = live_advantage
-	frame_advantage_changed.emit(frame_advantage)
-	_record_combat_event("POWER_ACTION_FRAME_ADVANTAGE", "POWER_ACTION live frame advantage updated.", {
-		"previous": previous,
-		"frame_advantage": frame_advantage,
-		"player_lock_frames": player_lock_frames,
-		"enemy_lock_frames": enemy_lock_frames,
-		"player_phase": _player_phase_for_log(),
-		"enemy_phase": _enemy_phase_for_log(),
-		"combat_state": _current_mode()
-	})
+	if power_fighting_mode_controller != null:
+		power_fighting_mode_controller.tick_live_frame_advantage()
 
 func _power_action_player_lock_frames() -> int:
-	var remaining := int(ceil(maxf(player_trade_recovery_frames_remaining, player_action_lifecycle_recovery_frames_remaining)))
-	if player_action_lifecycle_active and not player_action_lifecycle_done and remaining <= 0:
-		remaining = 1
-	var debug := _player_debug()
-	var logic_state := String(debug.get("logic_state", debug.get("action_state", "NEUTRAL"))).to_lower()
-	if logic_state.find("hitstun") != -1 or logic_state.find("blockstun") != -1:
-		remaining = maxi(remaining, 1)
-	return remaining
+	if power_fighting_mode_controller != null:
+		return power_fighting_mode_controller.player_lock_frames()
+	return 0
 
 func _power_action_enemy_lock_frames() -> int:
-	var remaining := 0
-	if current_enemy_intent != "" and remaining_startup_frames > 0:
-		remaining = maxi(remaining, remaining_startup_frames)
-	if power_action_enemy_active_frames_remaining > 0.0:
-		remaining = maxi(remaining, int(ceil(power_action_enemy_active_frames_remaining)))
-	if enemy_action_recovery_frames_remaining > 0.0:
-		remaining = maxi(remaining, int(ceil(enemy_action_recovery_frames_remaining)))
-	if enemy_vulnerable_frames_remaining > 0:
-		remaining = maxi(remaining, enemy_vulnerable_frames_remaining)
-	if enemy_trade_recovery_frames_remaining > 0.0:
-		remaining = maxi(remaining, int(ceil(enemy_trade_recovery_frames_remaining)))
-	if _enemy_break_frames_remaining() > 0:
-		remaining = maxi(remaining, _enemy_break_frames_remaining())
-	return remaining
+	if power_fighting_mode_controller != null:
+		return power_fighting_mode_controller.enemy_lock_frames()
+	return 0
 
 func _tick_trade_recovery_frames(frames: float) -> void:
 	if frames <= 0.0:
