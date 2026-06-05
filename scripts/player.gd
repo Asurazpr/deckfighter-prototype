@@ -4,6 +4,7 @@ extends CharacterBody2D
 signal hp_changed(current_hp: int, max_hp: int)
 signal stance_changed(current_stance: int, max_stance: int)
 signal defense_performed(defense_type: String)
+signal defensive_input_rejected(input_name: String, reason: String)
 
 const CombatAnimationDriver := preload("res://scripts/animation/combat_animation_driver.gd")
 const StanceConfig := preload("res://scripts/enemy/enemy_stance_config.gd")
@@ -37,6 +38,7 @@ var current_animation_hitbox_active := false
 var _card_visual_tween: Tween
 var _base_hurtbox_shape_size := Vector2.ZERO
 var _base_hurtbox_shape_position := Vector2.ZERO
+var _crouch_reject_latched := false
 
 @onready var body: ColorRect = $Body
 @onready var state_label: Label = $StateLabel
@@ -267,17 +269,27 @@ func reset_for_round_start() -> void:
 func is_crouching() -> bool:
 	return crouching
 
+func set_combat_crouch(enabled: bool) -> void:
+	if crouching == enabled:
+		return
+	crouching = enabled
+	_apply_crouch_hurtbox(crouching)
+	velocity.x = 0.0 if crouching else velocity.x
+	_set_state("CROUCH" if crouching else "READY")
+
 func can_enter_neutral_crouch() -> bool:
 	return input_enabled
 
 func _update_neutral_crouch() -> void:
-	var wants_crouch := _crouch_input_pressed() and can_enter_neutral_crouch()
-	if wants_crouch == crouching:
-		return
-	crouching = wants_crouch
-	_apply_crouch_hurtbox(crouching)
-	velocity.x = 0.0 if crouching else velocity.x
-	_set_state("CROUCH" if crouching else "READY")
+	var crouch_pressed := _crouch_input_pressed()
+	var can_crouch := can_enter_neutral_crouch()
+	if crouch_pressed and not can_crouch and not crouching and not _crouch_reject_latched:
+		_crouch_reject_latched = true
+		defensive_input_rejected.emit("crouch", "player_action_locked")
+	if not crouch_pressed or can_crouch:
+		_crouch_reject_latched = false
+	var wants_crouch := crouch_pressed and can_crouch
+	set_combat_crouch(wants_crouch)
 
 func _crouch_input_pressed() -> bool:
 	return Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN) or Input.is_action_pressed("ui_down")

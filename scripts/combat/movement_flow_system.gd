@@ -81,7 +81,7 @@ func enter(message := "") -> void:
 	player.set_free_movement_enabled(false)
 	if player is CharacterBody2D:
 		player.velocity.x = 0.0
-	Engine.time_scale = neutral_time_scale
+	Engine.time_scale = 1.0 if _power_action_mode() else neutral_time_scale
 	if message != "" and not was_active:
 		manager.log_message.emit(message)
 
@@ -98,7 +98,7 @@ func exit() -> void:
 		_clear_player_locomotion_visual()
 	player.set_free_movement_enabled(false)
 
-func tick(delta: float) -> Dictionary:
+func tick(delta: float, allow_enemy_approach := true) -> Dictionary:
 	if not active:
 		return {"should_start_intent": false}
 	elapsed += delta
@@ -111,7 +111,17 @@ func tick(delta: float) -> Dictionary:
 		_tick_player_jump(delta)
 	else:
 		_tick_player_step(delta)
-	_tick_enemy_approach_step(delta)
+	if allow_enemy_approach:
+		_tick_enemy_approach_step(delta)
+	else:
+		enemy_approach_active = false
+		if _enemy_movement_logged:
+			manager.log_message.emit("Enemy movement animation stopped.")
+			manager.log_message.emit("Enemy returned to guard pose.")
+			if enemy != null and enemy.has_method("clear_timeline_visual"):
+				enemy.clear_timeline_visual()
+			_enemy_movement_logged = false
+		_reset_enemy_step()
 	if _player_jump_active():
 		movement_system.clamp_duel_max_distance()
 	else:
@@ -120,7 +130,7 @@ func tick(delta: float) -> Dictionary:
 	distance_change_rate = (current_distance - previous_distance) / maxf(delta, 0.001)
 	last_distance = current_distance
 	_log_state_changes()
-	var reached_intent_range := current_distance <= approach_target_distance and not _player_jump_active()
+	var reached_intent_range := allow_enemy_approach and current_distance <= approach_target_distance and not _player_jump_active()
 	if reached_intent_range and not _enemy_reached_range_logged:
 		enemy_approach_end_reason = "distance %.0f <= target %.0f" % [current_distance, approach_target_distance]
 		manager.log_message.emit("Enemy reached range; evaluating intent.")
@@ -289,6 +299,8 @@ func _movement_pose_for_direction(direction: float) -> String:
 	return "step_forward" if signf(direction) == signf(movement_system.direction_to_enemy()) else "backstep"
 
 func _show_player_step_pose() -> void:
+	if _player_action_visual_locked():
+		return
 	var phase_name := "STARTUP"
 	var phase_total := BASIC_STEP_STARTUP_FRAMES
 	if movement_phase == STEP_PHASE_TRAVEL:
@@ -304,6 +316,8 @@ func _show_player_step_pose() -> void:
 		_show_actor_pose(player, movement_pose, phase_name, progress)
 
 func _show_player_jump_pose() -> void:
+	if _player_action_visual_locked():
+		return
 	var phase_name := "STARTUP"
 	var phase_total := BASIC_JUMP_STARTUP_FRAMES
 	if jump_phase == STEP_PHASE_TRAVEL:
@@ -318,6 +332,8 @@ func _show_player_jump_pose() -> void:
 func _show_player_idle_pose() -> void:
 	if _player_jump_active():
 		return
+	if _player_action_visual_locked():
+		return
 	if player != null and player.has_method("clear_live_locomotion_visual"):
 		player.clear_live_locomotion_visual()
 		return
@@ -327,6 +343,12 @@ func _show_player_idle_pose() -> void:
 func _show_actor_pose(actor: Node, action_name: String, phase_name: String, progress: float) -> void:
 	if actor != null and actor.has_method("show_timeline_phase"):
 		actor.show_timeline_phase(action_name, phase_name, clampf(progress, 0.0, 1.0), "", false)
+
+func _player_action_visual_locked() -> bool:
+	return manager != null and manager.has_method("player_action_visual_locked") and manager.player_action_visual_locked()
+
+func _power_action_mode() -> bool:
+	return manager != null and manager.has_method("is_power_action_mode") and manager.is_power_action_mode()
 
 func _reset_player_step() -> void:
 	movement_phase = STEP_PHASE_IDLE
@@ -375,6 +397,8 @@ func _clear_player_locomotion_visual() -> void:
 		player.clear_live_locomotion_visual()
 
 func _advance_combat_time(delta: float) -> void:
+	if _power_action_mode():
+		return
 	_frame_accumulator += delta * 60.0
 	var whole_frames := int(floor(_frame_accumulator))
 	if whole_frames <= 0:

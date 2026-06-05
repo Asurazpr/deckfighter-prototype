@@ -55,6 +55,7 @@ var impact_panel: PanelContainer
 var impact_label: Label
 var impact_bar: ProgressBar
 var start_fight_button: Button
+var control_mode_button: Button
 var debug_hint_label: Label
 var debug_panels_visible := false
 var enemy_ai_visible := true
@@ -83,6 +84,9 @@ func _process(_delta: float) -> void:
 		timing_label.text = combat_manager.get_timing_debug_text()
 	if start_fight_button != null and combat_manager.has_method("is_fight_started"):
 		start_fight_button.visible = not bool(combat_manager.is_fight_started())
+	if control_mode_button != null and combat_manager.has_method("is_fight_started"):
+		control_mode_button.visible = not bool(combat_manager.is_fight_started())
+		_refresh_control_mode_button()
 	_refresh_impact_bar()
 	_refresh_queue_label()
 
@@ -219,6 +223,9 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			if scene != null and scene.has_method("toggle_camera_debug"):
 				scene.toggle_camera_debug()
 				get_viewport().set_input_as_handled()
+		KEY_F9:
+			_toggle_control_mode()
+			get_viewport().set_input_as_handled()
 
 func _remove_space_from_ui_accept() -> void:
 	if not InputMap.has_action("ui_accept"):
@@ -323,6 +330,16 @@ func _build_debug_panels() -> void:
 	_style_progress_bar(impact_bar, Color(1.0, 0.62, 0.24))
 	impact_box.add_child(impact_bar)
 
+	control_mode_button = Button.new()
+	control_mode_button.position = Vector2(690, 104)
+	control_mode_button.size = Vector2(220, 42)
+	control_mode_button.add_theme_font_size_override("font_size", 16)
+	control_mode_button.add_theme_stylebox_override("normal", _button_style(Color(0.10, 0.12, 0.18, 0.96), Color(0.42, 0.62, 1.0, 0.82)))
+	control_mode_button.add_theme_stylebox_override("hover", _button_style(Color(0.14, 0.18, 0.26, 0.98), Color(0.56, 0.74, 1.0, 0.95)))
+	control_mode_button.pressed.connect(_on_control_mode_pressed)
+	root.add_child(control_mode_button)
+	_refresh_control_mode_button()
+
 	start_fight_button = Button.new()
 	start_fight_button.text = "Start Fight"
 	start_fight_button.position = Vector2(690, 160)
@@ -336,7 +353,7 @@ func _build_debug_panels() -> void:
 	debug_hint_label = Label.new()
 	debug_hint_label.position = Vector2(934, 130)
 	debug_hint_label.size = Vector2(510, 24)
-	debug_hint_label.text = "F1 Debug  Ctrl+F1 Readability  F4 Log  F5 Export  F6 Boxes  F7 Cam"
+	debug_hint_label.text = "F1 Debug  Ctrl+F1 Readability  F4 Log  F5 Export  F6 Boxes  F7 Cam  F9 Mode"
 	debug_hint_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	debug_hint_label.add_theme_font_size_override("font_size", 12)
 	debug_hint_label.add_theme_color_override("font_color", Color(0.72, 0.78, 0.84, 0.82))
@@ -547,7 +564,26 @@ func _on_start_fight_pressed() -> void:
 		combat_manager.start_fight()
 	if start_fight_button != null:
 		start_fight_button.visible = false
+	if control_mode_button != null:
+		control_mode_button.visible = false
 	_refresh_card_enabled_state()
+
+func _on_control_mode_pressed() -> void:
+	_toggle_control_mode()
+
+func _toggle_control_mode() -> void:
+	if combat_manager != null and combat_manager.has_method("toggle_control_mode"):
+		combat_manager.toggle_control_mode()
+	_refresh_control_mode_button()
+	_refresh_card_enabled_state()
+
+func _refresh_control_mode_button() -> void:
+	if control_mode_button == null:
+		return
+	var mode_name := "TIME_TACTICAL"
+	if combat_manager != null and combat_manager.has_method("get_control_mode_name"):
+		mode_name = String(combat_manager.get_control_mode_name())
+	control_mode_button.text = "Mode: %s" % mode_name
 
 func _try_play_card_from_number(index: int) -> void:
 	if index >= card_buttons.size():
@@ -556,6 +592,8 @@ func _try_play_card_from_number(index: int) -> void:
 		_on_log_message("Card not playable.")
 
 func _try_play_card(index: int) -> bool:
+	if combat_manager != null and combat_manager.has_method("log_card_playability_debug"):
+		combat_manager.log_card_playability_debug(index, "ui_card_click")
 	if combat_manager == null or not combat_manager.is_hand_card_playable(index):
 		if combat_manager != null and combat_manager.has_method("get_card_input_rejection_reason"):
 			var reason := String(combat_manager.get_card_input_rejection_reason(index))

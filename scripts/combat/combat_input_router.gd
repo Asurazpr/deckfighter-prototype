@@ -6,8 +6,25 @@ extends RefCounted
 
 func route_key_event(event: InputEvent, manager: Node, viewport: Viewport) -> bool:
 	var key_event := event as InputEventKey
-	if key_event == null or not key_event.pressed or key_event.echo:
+	if key_event == null or key_event.echo:
 		return false
+
+	if manager.has_method("is_power_action_mode") and manager.is_power_action_mode() and key_event.keycode == KEY_L and manager.has_method("request_power_action_block"):
+		manager.request_power_action_block(key_event.pressed)
+		viewport.set_input_as_handled()
+		return true
+
+	if not key_event.pressed:
+		return false
+
+	if key_event.keycode == KEY_F9 and manager.has_method("toggle_control_mode"):
+		manager.toggle_control_mode()
+		viewport.set_input_as_handled()
+		return true
+
+	if manager.has_method("is_power_action_mode") and manager.is_power_action_mode():
+		if _handle_power_action_controls(key_event.keycode, manager, viewport):
+			return true
 
 	if manager.can_accept_live_movement():
 		if key_event.keycode == KEY_W and manager.has_method("request_live_neutral_jump"):
@@ -77,4 +94,28 @@ func _handle_queue_controls(keycode: Key, manager: Node, viewport: Viewport, slo
 			return false
 
 func _is_debug_toggle(keycode: Key) -> bool:
-	return keycode == KEY_F1 or keycode == KEY_F2 or keycode == KEY_F3 or keycode == KEY_F4 or keycode == KEY_F5 or keycode == KEY_F6 or keycode == KEY_F7
+	return keycode == KEY_F1 or keycode == KEY_F2 or keycode == KEY_F3 or keycode == KEY_F4 or keycode == KEY_F5 or keycode == KEY_F6 or keycode == KEY_F7 or keycode == KEY_F9
+
+func _handle_power_action_controls(keycode: Key, manager: Node, viewport: Viewport) -> bool:
+	var move_id := ""
+	var input_name := ""
+	match keycode:
+		KEY_J:
+			move_id = "light_punch"
+			input_name = "J"
+		KEY_K:
+			move_id = "light_kick"
+			input_name = "K"
+		KEY_U:
+			move_id = "heavy_punch"
+			input_name = "U"
+		KEY_I:
+			move_id = "heavy_kick"
+			input_name = "I"
+		_:
+			return false
+	if manager.has_method("request_direct_action"):
+		viewport.set_input_as_handled()
+		manager.request_direct_action(input_name, move_id)
+		return true
+	return false

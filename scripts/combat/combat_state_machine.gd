@@ -63,6 +63,9 @@ func can_accept_action_request(action_request, frame_advantage := 0, actor_actio
 	if not actor_action_ready:
 		return false
 	var actor_id := String(action_request.actor_id) if action_request is ActionRequestScript else String(action_request.get("actor_id", "player"))
+	var source_type := int(action_request.source_type) if action_request is ActionRequestScript else int(action_request.get("source_type", ActionRequestScript.SourceType.CARD))
+	if source_type == ActionRequestScript.SourceType.DIRECT_INPUT:
+		return not _is_hard_global_lock()
 	if is_actor_locked(actor_id):
 		return false
 	match current_state:
@@ -70,10 +73,15 @@ func can_accept_action_request(action_request, frame_advantage := 0, actor_actio
 			return true
 		State.PLAYER_PRESSURE, State.PLAYER_RECOVERY:
 			return actor_id == "player" and frame_advantage > 0
+		State.ENEMY_RECOVERY:
+			return actor_id == "player" and frame_advantage > 0
 		State.STANCE_BREAK:
 			return actor_id == "player" and frame_advantage > 0
 		_:
 			return false
+
+func _is_hard_global_lock() -> bool:
+	return current_state == State.HITSTOP or current_state == State.GAME_OVER or current_state == State.PRE_FIGHT
 
 func can_accept_card_input(frame_advantage := 0, player_action_ready := true) -> bool:
 	var request = ActionRequestScript.new()
