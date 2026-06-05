@@ -3352,20 +3352,24 @@ func _card_has_tag(card: Resource, tag_name: String) -> bool:
 	return route_system.card_has_tag(card, tag_name)
 
 func _make_card_queue_action(index: int) -> Dictionary:
-	return queue_resolver.card_snapshot(index, _is_enemy_broken())
+	if tactical_mode_controller == null:
+		return {}
+	return tactical_mode_controller.make_card_queue_action(index)
 
 func _card_from_snapshot(snapshot: Dictionary) -> Resource:
 	return deck_manager.call("_card_from_snapshot", snapshot) as Resource
 
 func _snapshot_debug_text(snapshot: Dictionary) -> String:
-	return queue_resolver.snapshot_debug_text(snapshot)
+	if tactical_mode_controller == null:
+		return ""
+	return tactical_mode_controller.snapshot_debug_text(snapshot)
 
 func _warn_if_snapshot_changed(snapshot: Dictionary) -> void:
-	if queue_resolver.warning_if_snapshot_changed(snapshot):
-		log_message.emit("Warning: queued action changed name/id after being queued.")
+	if tactical_mode_controller != null:
+		tactical_mode_controller.warn_if_snapshot_changed(snapshot)
 
 func _is_card_instance_queued(card: Resource) -> bool:
-	return queue_resolver.is_card_instance_queued(card)
+	return tactical_mode_controller != null and tactical_mode_controller.is_card_instance_queued(card)
 
 func _on_follow_up_drawn(card_name: String) -> void:
 	log_message.emit("Follow-up card drawn: %s." % card_name)
@@ -3889,33 +3893,24 @@ func request_live_neutral_jump() -> void:
 		movement_flow_system.request_player_jump()
 
 func get_queue_text() -> String:
-	return queue_resolver.queue_text()
+	if tactical_mode_controller == null:
+		return "Queue: Empty"
+	return tactical_mode_controller.queue_text()
 
 func _is_tactical_mode() -> bool:
 	return tactical_mode_controller != null and tactical_mode_controller.tactical_input_mode_active()
 
 func _queue_tactical_action(action: Dictionary) -> void:
-	if not queue_resolver.append(action):
-		return
-	log_message.emit("Queued: %s." % _queued_action_display_name(action))
-	if action.get("type", "") == "CARD":
-		log_message.emit("Card queued: %s #%d." % [action.get("display_name", "Unknown"), int(action.get("instance_id", 0))])
-		log_message.emit("Queued snapshot content: %s." % _snapshot_debug_text(action))
-	frame_advantage_changed.emit(frame_advantage)
+	if tactical_mode_controller != null:
+		tactical_mode_controller.queue_tactical_action(action)
 
 func _pop_tactical_action() -> void:
-	if queue_resolver.is_empty():
-		return
-	var action: Dictionary = queue_resolver.pop_back()
-	log_message.emit("Removed queued action: %s." % _queued_action_display_name(action))
-	frame_advantage_changed.emit(frame_advantage)
+	if tactical_mode_controller != null:
+		tactical_mode_controller.pop_tactical_action()
 
 func _clear_tactical_queue() -> void:
-	if queue_resolver.is_empty():
-		return
-	queue_resolver.clear()
-	log_message.emit("Action queue cleared.")
-	frame_advantage_changed.emit(frame_advantage)
+	if tactical_mode_controller != null:
+		tactical_mode_controller.clear_tactical_queue()
 
 func _execute_or_wait_tactical_queue() -> void:
 	if tactical_mode_controller == null:
@@ -3980,7 +3975,9 @@ func _combat_action_from_queued_action(action: String) -> String:
 			return ""
 
 func _queued_action_display_name(action: Dictionary) -> String:
-	return queue_resolver.queued_action_display_name(action)
+	if tactical_mode_controller == null:
+		return String(action.get("type", "")).capitalize()
+	return tactical_mode_controller.queued_action_display_name(action)
 
 func _can_take_pressure_movement() -> bool:
 	return tactical_mode_controller != null and tactical_mode_controller.pressure_movement_allowed()

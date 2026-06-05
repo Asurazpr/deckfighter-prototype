@@ -105,8 +105,8 @@ func execute_slow_neutral_queue() -> void:
 func resolve_queued_action(action: Dictionary) -> void:
 	if action.get("type", "") == "CARD":
 		manager._clear_attack_hitboxes()
-		manager.log_message.emit("Action snapshot executed: %s." % manager._snapshot_debug_text(action))
-		manager._warn_if_snapshot_changed(action)
+		manager.log_message.emit("Action snapshot executed: %s." % snapshot_debug_text(action))
+		warn_if_snapshot_changed(action)
 		if manager._is_enemy_intent_state():
 			await manager._try_interrupt_with_card_snapshot(action)
 		elif manager._can_take_pressure_movement():
@@ -149,6 +149,53 @@ func queue_text() -> String:
 	return queue_resolver.queue_text()
 
 
+func queue_tactical_action(action: Dictionary) -> void:
+	if manager == null or queue_resolver == null:
+		return
+	if not queue_resolver.append(action):
+		return
+	manager.log_message.emit("Queued: %s." % queued_action_display_name(action))
+	if action.get("type", "") == "CARD":
+		manager.log_message.emit("Card queued: %s #%d." % [action.get("display_name", "Unknown"), int(action.get("instance_id", 0))])
+		manager.log_message.emit("Queued snapshot content: %s." % snapshot_debug_text(action))
+	manager.frame_advantage_changed.emit(manager.frame_advantage)
+
+func pop_tactical_action() -> void:
+	if manager == null or queue_resolver == null or queue_resolver.is_empty():
+		return
+	var action: Dictionary = queue_resolver.pop_back()
+	manager.log_message.emit("Removed queued action: %s." % queued_action_display_name(action))
+	manager.frame_advantage_changed.emit(manager.frame_advantage)
+
+func clear_tactical_queue() -> void:
+	if manager == null or queue_resolver == null or queue_resolver.is_empty():
+		return
+	queue_resolver.clear()
+	manager.log_message.emit("Action queue cleared.")
+	manager.frame_advantage_changed.emit(manager.frame_advantage)
+
+func make_card_queue_action(index: int) -> Dictionary:
+	if manager == null or queue_resolver == null:
+		return {}
+	return queue_resolver.card_snapshot(index, manager._is_enemy_broken())
+
+func snapshot_debug_text(snapshot: Dictionary) -> String:
+	if queue_resolver == null:
+		return ""
+	return queue_resolver.snapshot_debug_text(snapshot)
+
+func warn_if_snapshot_changed(snapshot: Dictionary) -> void:
+	if manager != null and queue_resolver != null and queue_resolver.warning_if_snapshot_changed(snapshot):
+		manager.log_message.emit("Warning: queued action changed name/id after being queued.")
+
+func is_card_instance_queued(card: Resource) -> bool:
+	return queue_resolver != null and queue_resolver.is_card_instance_queued(card)
+
+func queued_action_display_name(action: Dictionary) -> String:
+	if queue_resolver == null:
+		return String(action.get("type", "")).capitalize()
+	return queue_resolver.queued_action_display_name(action)
+
 func can_play_cards() -> bool:
 	if manager == null:
 		return false
@@ -175,8 +222,8 @@ func is_hand_card_playable(index: int) -> bool:
 	if not _has_hand_card(index):
 		return false
 	if manager._is_reaction_window_state() or manager._is_slow_neutral_state() or manager._is_enemy_intent_state():
-		return not manager._is_card_instance_queued(deck_manager.hand[index])
-	return can_play_cards() and not manager._is_card_instance_queued(deck_manager.hand[index])
+		return not is_card_instance_queued(deck_manager.hand[index])
+	return can_play_cards() and not is_card_instance_queued(deck_manager.hand[index])
 
 func card_input_rejection_reason(index: int) -> String:
 	if manager == null:
@@ -185,7 +232,7 @@ func card_input_rejection_reason(index: int) -> String:
 		return "POWER_ACTION uses direct inputs J/K/U/I; cards do not mutate the deck"
 	if deck_manager == null or not ("hand" in deck_manager) or index < 0 or index >= deck_manager.hand.size():
 		return "no hand card at index %d" % index
-	if manager._is_card_instance_queued(deck_manager.hand[index]):
+	if is_card_instance_queued(deck_manager.hand[index]):
 		return "card instance already queued"
 	if manager.combat_over:
 		return "combat over"
@@ -246,7 +293,7 @@ func tactical_card_gate_allows(index: int, core_can_accept: bool, player_can_act
 		return false
 	if index < 0 or index >= deck_manager.hand.size():
 		return false
-	if manager._is_card_instance_queued(deck_manager.hand[index]):
+	if is_card_instance_queued(deck_manager.hand[index]):
 		return false
 	if not player_can_act or not core_can_accept:
 		return false
