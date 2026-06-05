@@ -6,6 +6,7 @@ const CombatStateMachineScript := preload("res://scripts/combat/combat_state_mac
 
 var manager
 var enemy_lifecycle_controller
+var player_action_lifecycle_controller
 var direct_input_map := {
 	"J": "light_punch",
 	"K": "light_kick",
@@ -17,9 +18,10 @@ const TICK_PROCESS_PRE := "process_pre"
 const TICK_PROCESS_FLOW := "process_flow"
 const TICK_PHYSICS := "physics"
 
-func setup(manager_ref, enemy_lifecycle_controller_ref = null) -> void:
+func setup(manager_ref, enemy_lifecycle_controller_ref = null, player_action_lifecycle_controller_ref = null) -> void:
 	manager = manager_ref
 	enemy_lifecycle_controller = enemy_lifecycle_controller_ref
+	player_action_lifecycle_controller = player_action_lifecycle_controller_ref
 
 func tick_power_mode(delta: float, tick_stage := TICK_PHYSICS) -> void:
 	if manager == null or manager.combat_over or not manager.is_power_action_mode():
@@ -62,6 +64,12 @@ func _enemy_lifecycle():
 	if manager != null:
 		return manager.enemy_lifecycle_controller
 	return null
+func _player_lifecycle():
+	if player_action_lifecycle_controller != null:
+		return player_action_lifecycle_controller
+	if manager != null:
+		return manager.player_action_lifecycle_controller
+	return null
 
 func tick_enemy_recovery(delta: float) -> void:
 	var enemy_lifecycle = _enemy_lifecycle()
@@ -79,20 +87,9 @@ func tick_enemy_hitstun(delta: float) -> void:
 		enemy_lifecycle.tick_power_hitstun(delta)
 
 func tick_player_recovery(delta: float) -> void:
-	if manager == null or not manager.is_power_action_mode() or manager.combat_over:
-		return
-	if not manager.player_action_lifecycle_active or not manager.player_action_lifecycle_recovery_running:
-		return
-	if manager.player_action_lifecycle_recovery_frames_remaining <= 0.0:
-		return
-	var tick: Dictionary = manager._consume_gameplay_frames(delta, manager.power_action_player_recovery_frame_accumulator)
-	manager.power_action_player_recovery_frame_accumulator = float(tick.get("accumulator", manager.power_action_player_recovery_frame_accumulator))
-	var frames: int = int(tick.get("frames", 0))
-	if frames <= 0:
-		return
-	manager.player_action_lifecycle_recovery_frames_remaining = maxf(0.0, manager.player_action_lifecycle_recovery_frames_remaining - float(frames))
-	if manager.player_action_lifecycle_recovery_frames_remaining <= 0.0:
-		manager._finish_player_action_lifecycle(manager.player_action_lifecycle_token, "recovery_complete")
+	var player_lifecycle = _player_lifecycle()
+	if player_lifecycle != null:
+		player_lifecycle.tick_power_recovery(delta)
 
 func tick_live_frame_advantage() -> void:
 	if manager == null or not manager.is_power_action_mode() or manager.combat_over:
@@ -120,8 +117,10 @@ func tick_live_frame_advantage() -> void:
 func player_lock_frames() -> int:
 	if manager == null:
 		return 0
-	var remaining: int = int(ceil(maxf(manager.player_trade_recovery_frames_remaining, manager.player_action_lifecycle_recovery_frames_remaining)))
-	if manager.player_action_lifecycle_active and not manager.player_action_lifecycle_done and remaining <= 0:
+	var player_lifecycle = _player_lifecycle()
+	var lifecycle_recovery: float = player_lifecycle.recovery_frames_remaining if player_lifecycle != null else 0.0
+	var remaining: int = int(ceil(maxf(manager.player_trade_recovery_frames_remaining, lifecycle_recovery)))
+	if player_lifecycle != null and player_lifecycle.active and not player_lifecycle.done and remaining <= 0:
 		remaining = 1
 	var debug: Dictionary = manager._player_debug()
 	var logic_state: String = String(debug.get("logic_state", debug.get("action_state", "NEUTRAL"))).to_lower()

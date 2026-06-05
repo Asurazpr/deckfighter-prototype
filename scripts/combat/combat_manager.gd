@@ -25,6 +25,7 @@ const StanceSystemScript := preload("res://scripts/combat/stance_system.gd")
 const StanceDamageResolverScript := preload("res://scripts/combat/stance_damage_resolver.gd")
 const EnemyAISystemScript := preload("res://scripts/combat/enemy_ai_system.gd")
 const EnemyLifecycleControllerScript := preload("res://scripts/combat/enemy_lifecycle_controller.gd")
+const PlayerActionLifecycleControllerScript := preload("res://scripts/combat/player_action_lifecycle_controller.gd")
 const CombatTimelineScript := preload("res://scripts/combat/combat_timeline.gd")
 const ReactionWindowSystemScript := preload("res://scripts/combat/reaction_window_system.gd")
 const MovementFlowSystemScript := preload("res://scripts/combat/movement_flow_system.gd")
@@ -122,6 +123,7 @@ var stance_system
 var stance_damage_resolver
 var enemy_ai_system
 var enemy_lifecycle_controller
+var player_action_lifecycle_controller
 var combat_timeline
 var reaction_window_system
 var movement_flow_system
@@ -142,17 +144,6 @@ var player_trade_recovery_frames_remaining := 0.0
 var enemy_trade_recovery_frames_remaining := 0.0
 var enemy_action_recovery_frames_remaining := 0.0
 var pending_trade_followup_window := false
-var player_action_lifecycle_active := false
-var player_action_lifecycle_done := true
-var player_action_lifecycle_release_authorized := false
-var player_action_lifecycle_release_reason := ""
-var player_action_lifecycle_action_id := ""
-var player_action_lifecycle_card_name := ""
-var player_action_lifecycle_phase := "DONE"
-var player_action_lifecycle_token := 0
-var player_action_lifecycle_recovery_frames_remaining := 0.0
-var player_action_lifecycle_recovery_running := false
-var power_action_player_recovery_frame_accumulator := 0.0
 var power_action_enemy_startup_frame_accumulator := 0.0
 var enemy_action_recovery_frame_accumulator := 0.0
 var power_action_enemy_recovery_frame_accumulator := 0.0
@@ -220,6 +211,8 @@ func _setup_combat_systems() -> void:
 	enemy_ai_system.setup(self, enemy, frame_system)
 	enemy_lifecycle_controller = EnemyLifecycleControllerScript.new()
 	enemy_lifecycle_controller.setup(self)
+	player_action_lifecycle_controller = PlayerActionLifecycleControllerScript.new()
+	player_action_lifecycle_controller.setup(self)
 	combat_timeline = CombatTimelineScript.new()
 	reaction_window_system = ReactionWindowSystemScript.new()
 	reaction_window_system.setup(self, player, PERFECT_BLOCK_REACTION_PROGRESS, REACTION_GUARD_STARTUP_FRAMES)
@@ -232,7 +225,7 @@ func _setup_combat_systems() -> void:
 	tactical_mode_controller = TacticalModeControllerScript.new()
 	tactical_mode_controller.setup(self, deck_manager, queue_resolver)
 	power_fighting_mode_controller = PowerFightingModeControllerScript.new()
-	power_fighting_mode_controller.setup(self, enemy_lifecycle_controller)
+	power_fighting_mode_controller.setup(self, enemy_lifecycle_controller, player_action_lifecycle_controller)
 	combat_animation_controller = CombatAnimationControllerScript.new()
 	combat_animation_controller.setup(self, player, enemy)
 	combat_input_router = CombatInputRouterScript.new()
@@ -306,7 +299,7 @@ func _log_architecture_validation() -> void:
 	var active_path: String = get_script().resource_path
 	var legacy_present := ResourceLoader.exists("res://scripts/combat_manager.gd")
 	log_message.emit("Active combat manager: %s (CombatManagerCore)." % active_path)
-	log_message.emit("Loaded combat systems: CombatCore, CombatClock, CombatTimeline, FrameSystem, QueueResolver, RouteSystem, MovementSystem, MovementFlowSystem, HitboxSystem, TradeSystem, StanceSystem, StanceDamageResolver, EnemyAISystem, EnemyLifecycleController, ReactionWindowSystem, CombatStateMachine, CombatInputRouter, TacticalModeController, PowerFightingModeController, CombatAnimationController.")
+	log_message.emit("Loaded combat systems: CombatCore, CombatClock, CombatTimeline, FrameSystem, QueueResolver, RouteSystem, MovementSystem, MovementFlowSystem, HitboxSystem, TradeSystem, StanceSystem, StanceDamageResolver, EnemyAISystem, EnemyLifecycleController, PlayerActionLifecycleController, ReactionWindowSystem, CombatStateMachine, CombatInputRouter, TacticalModeController, PowerFightingModeController, CombatAnimationController.")
 	log_message.emit("CombatCore gameplay clock: %d FPS." % int(CombatCoreScript.GAMEPLAY_FPS))
 	log_message.emit("Legacy combat manager present: %s." % str(legacy_present))
 
@@ -492,8 +485,8 @@ func _action_request_source_name(action_request) -> String:
 	return "none"
 
 func _player_phase_for_log() -> String:
-	if player_action_lifecycle_active and not player_action_lifecycle_done:
-		return player_action_lifecycle_phase
+	if player_action_lifecycle_controller.active and not player_action_lifecycle_controller.done:
+		return player_action_lifecycle_controller.phase
 	if player_trade_recovery_frames_remaining > 0.0:
 		return "TRADE_RECOVERY"
 	var debug := _player_debug()
@@ -923,7 +916,7 @@ func _on_player_defensive_input_rejected(input_name: String, reason: String) -> 
 func _log_defensive_input_rejected(input_name: String, reject_reason: String, can_block: bool, can_crouch: bool) -> void:
 	var event_type := "BLOCK_REJECTED" if input_name == "block" else "DEFENSIVE_INPUT_REJECTED"
 	var recovery_remaining := maxi(
-		int(ceil(player_action_lifecycle_recovery_frames_remaining)),
+		int(ceil(player_action_lifecycle_controller.recovery_frames_remaining)),
 		int(ceil(player_trade_recovery_frames_remaining))
 	)
 	var data: Dictionary = {
@@ -1329,10 +1322,10 @@ func _player_action_lock_reason() -> String:
 		return "trade recovery remaining=%df frame_advantage=%d" % [int(ceil(player_trade_recovery_frames_remaining)), frame_advantage]
 	if _player_action_lifecycle_blocks_card_input():
 		return "manager lifecycle action=%s phase=%s recovery=%df release=%s frame_advantage=%d" % [
-			player_action_lifecycle_action_id,
-			player_action_lifecycle_phase,
-			int(ceil(player_action_lifecycle_recovery_frames_remaining)),
-			str(player_action_lifecycle_release_authorized),
+			player_action_lifecycle_controller.action_id,
+			player_action_lifecycle_controller.phase,
+			int(ceil(player_action_lifecycle_controller.recovery_frames_remaining)),
+			str(player_action_lifecycle_controller.release_authorized),
 			frame_advantage
 		]
 	if player != null and player.has_method("card_action_rejection_reason"):
@@ -1350,8 +1343,8 @@ func _open_player_followup_window(reason := "") -> void:
 	if player != null and player.has_method("open_followup_window"):
 		player.open_followup_window()
 	log_message.emit("PLAYER_REWARD set for follow-up: action=%s recovery_frames=%d reward_value=%d reason=%s." % [
-		player_action_lifecycle_action_id,
-		int(ceil(player_action_lifecycle_recovery_frames_remaining)),
+		player_action_lifecycle_controller.action_id,
+		int(ceil(player_action_lifecycle_controller.recovery_frames_remaining)),
 		_player_reward_frame_value(),
 		reason if reason != "" else "follow-up window"
 	])
@@ -1367,7 +1360,7 @@ func _open_trade_followup_window(reason := "") -> void:
 	if player != null and player.has_method("open_followup_window"):
 		player.open_followup_window()
 	log_message.emit("PLAYER_REWARD set for post-trade follow-up: action=%s recovery_frames=0 reward_value=%d reason=%s." % [
-		player_action_lifecycle_action_id,
+		player_action_lifecycle_controller.action_id,
 		_player_reward_frame_value(),
 		reason if reason != "" else "trade follow-up window"
 	])
@@ -1417,13 +1410,13 @@ func _start_player_card_action(card: Resource) -> void:
 		player.perform_card_action(card)
 
 func _wait_for_player_hit_confirm(card: Resource) -> void:
-	if not player_action_lifecycle_active or card == null:
+	if not player_action_lifecycle_controller.active or card == null:
 		return
-	var token := player_action_lifecycle_token
+	var token: int = player_action_lifecycle_controller.token
 	var hit_frame := maxi(1, int(card.hit_frame))
 	log_message.emit("Player action lifecycle wait: %s hit_confirm at %df." % [String(card.id), hit_frame])
 	await get_tree().create_timer(_player_action_frames_to_seconds(hit_frame), false, true).timeout
-	if token != player_action_lifecycle_token or not player_action_lifecycle_active:
+	if token != player_action_lifecycle_controller.token or not player_action_lifecycle_controller.active:
 		return
 	_set_player_action_lifecycle_phase("ACTIVE", "hit_confirm")
 	if combat_timeline != null and combat_timeline.actor == "PLAYER":
@@ -1432,116 +1425,32 @@ func _wait_for_player_hit_confirm(card: Resource) -> void:
 	log_message.emit("Player action hit confirm authorized by CombatManager: %s." % String(card.id))
 
 func _begin_player_action_lifecycle(card: Resource) -> void:
-	player_action_lifecycle_token += 1
-	player_action_lifecycle_active = true
-	player_action_lifecycle_done = false
-	player_action_lifecycle_release_authorized = false
-	player_action_lifecycle_release_reason = ""
-	player_action_lifecycle_action_id = String(card.id) if card != null else "unknown"
-	player_action_lifecycle_card_name = String(card.display_name) if card != null else "Unknown"
-	player_action_lifecycle_phase = "STARTUP"
-	player_action_lifecycle_recovery_frames_remaining = 0.0
-	player_action_lifecycle_recovery_running = false
-	power_action_player_recovery_frame_accumulator = 0.0
-	log_message.emit("Player action lifecycle start: %s (%s)." % [player_action_lifecycle_action_id, player_action_lifecycle_card_name])
-	_record_combat_event("player_action_lifecycle", "Player action lifecycle start.", {
-		"action_id": player_action_lifecycle_action_id,
-		"card_name": player_action_lifecycle_card_name,
-		"phase": player_action_lifecycle_phase,
-		"authorized_by": "CombatManager"
-	})
+	if player_action_lifecycle_controller != null:
+		player_action_lifecycle_controller.begin(card)
 
 func _set_player_action_lifecycle_phase(phase_name: String, reason := "") -> void:
-	if player_action_lifecycle_phase == phase_name:
-		return
-	player_action_lifecycle_phase = phase_name
-	var detail := " (%s)" % reason if reason != "" else ""
-	log_message.emit("Player action lifecycle phase: %s -> %s%s." % [player_action_lifecycle_action_id, phase_name, detail])
-	_record_combat_event("player_action_lifecycle", "Player action lifecycle phase changed.", {
-		"action_id": player_action_lifecycle_action_id,
-		"card_name": player_action_lifecycle_card_name,
-		"phase": phase_name,
-		"reason": reason,
-		"authorized_by": "CombatManager"
-	})
+	if player_action_lifecycle_controller != null:
+		player_action_lifecycle_controller.set_phase(phase_name, reason)
 
 func _player_action_lifecycle_blocks_card_input() -> bool:
-	return player_action_lifecycle_active \
-		and not player_action_lifecycle_done \
-		and not player_action_lifecycle_release_authorized
+	return player_action_lifecycle_controller.active \
+		and not player_action_lifecycle_controller.done \
+		and not player_action_lifecycle_controller.release_authorized
 
 func player_action_visual_locked() -> bool:
-	return (player_action_lifecycle_active and not player_action_lifecycle_done) or player_trade_recovery_frames_remaining > 0.0
+	return (player_action_lifecycle_controller.active and not player_action_lifecycle_controller.done) or player_trade_recovery_frames_remaining > 0.0
 
 func _authorize_player_action_lifecycle_release(reason: String) -> void:
-	if not player_action_lifecycle_active or player_action_lifecycle_done:
-		return
-	if player_action_lifecycle_release_authorized:
-		return
-	player_action_lifecycle_release_authorized = true
-	player_action_lifecycle_release_reason = reason
-	log_message.emit("Player action lifecycle release authorized: %s (%s)." % [player_action_lifecycle_action_id, reason])
-	_record_combat_event("player_action_lifecycle", "Player action lifecycle release authorized.", {
-		"action_id": player_action_lifecycle_action_id,
-		"card_name": player_action_lifecycle_card_name,
-		"phase": player_action_lifecycle_phase,
-		"release_reason": reason,
-		"authorized_by": "CombatManager"
-	})
-	player_action_lifecycle_released.emit(reason)
+	if player_action_lifecycle_controller != null:
+		player_action_lifecycle_controller.authorize_release(reason)
 
 func _finish_player_action_lifecycle(token: int, reason := "recovery_complete") -> void:
-	if token != player_action_lifecycle_token:
-		return
-	if not player_action_lifecycle_active:
-		return
-	_set_player_action_lifecycle_phase("DONE", reason)
-	player_action_lifecycle_active = false
-	player_action_lifecycle_done = true
-	player_action_lifecycle_release_authorized = true
-	player_action_lifecycle_release_reason = reason
-	player_action_lifecycle_recovery_frames_remaining = 0.0
-	player_action_lifecycle_recovery_running = false
-	power_action_player_recovery_frame_accumulator = 0.0
-	current_player_action_request = null
-	hitbox_system.finish_player_move()
-	if combat_timeline != null and combat_timeline.actor == "PLAYER":
-		combat_timeline.finish_action()
-	if player != null and player.has_method("finish_action_from_combat_manager"):
-		player.finish_action_from_combat_manager(reason)
-	log_message.emit("Player action lifecycle done authorized by CombatManager: %s (%s)." % [player_action_lifecycle_action_id, reason])
-	_record_combat_event("player_action_lifecycle", "Player action lifecycle done.", {
-		"action_id": player_action_lifecycle_action_id,
-		"card_name": player_action_lifecycle_card_name,
-		"phase": "DONE",
-		"reason": reason,
-		"authorized_by": "CombatManager"
-	})
-	_record_action_lifecycle_event("ACTION_DONE", {
-		"actor": "player",
-		"move_id": player_action_lifecycle_action_id
-	})
-	player_action_lifecycle_released.emit(reason)
-	_handle_power_action_player_lifecycle_done(reason)
+	if player_action_lifecycle_controller != null:
+		player_action_lifecycle_controller.finish(token, reason)
 
 func _cancel_player_action_lifecycle(reason := "cancelled", finish_visual := false) -> void:
-	if not player_action_lifecycle_active and player_action_lifecycle_done:
-		return
-	player_action_lifecycle_token += 1
-	player_action_lifecycle_active = false
-	player_action_lifecycle_done = true
-	player_action_lifecycle_release_authorized = true
-	player_action_lifecycle_release_reason = reason
-	player_action_lifecycle_phase = "DONE"
-	player_action_lifecycle_recovery_frames_remaining = 0.0
-	player_action_lifecycle_recovery_running = false
-	power_action_player_recovery_frame_accumulator = 0.0
-	current_player_action_request = null
-	hitbox_system.finish_player_move()
-	log_message.emit("Player action lifecycle cancelled: %s." % reason)
-	if finish_visual and player != null and player.has_method("finish_action_from_combat_manager"):
-		player.finish_action_from_combat_manager(reason)
-	player_action_lifecycle_released.emit(reason)
+	if player_action_lifecycle_controller != null:
+		player_action_lifecycle_controller.cancel(reason, finish_visual)
 
 func _handle_power_action_player_lifecycle_done(reason: String) -> void:
 	if not is_power_action_mode() or combat_over or combat_state_machine == null:
@@ -1570,31 +1479,8 @@ func _handle_power_action_player_lifecycle_done(reason: String) -> void:
 		call_deferred("_run_enemy_attack", false)
 
 func _begin_player_trade_recovery_lifecycle(card: Resource, recovery_frames: int, action_request = null) -> void:
-	player_action_lifecycle_token += 1
-	player_action_lifecycle_active = true
-	player_action_lifecycle_done = false
-	player_action_lifecycle_release_authorized = false
-	player_action_lifecycle_release_reason = ""
-	player_action_lifecycle_action_id = String(card.id) if card != null else "trade"
-	player_action_lifecycle_card_name = String(card.display_name) if card != null else "Trade"
-	player_action_lifecycle_phase = "TRADE_RECOVERY"
-	player_action_lifecycle_recovery_frames_remaining = float(maxi(0, recovery_frames))
-	player_action_lifecycle_recovery_running = true
-	power_action_player_recovery_frame_accumulator = 0.0
-	current_player_action_request = action_request if action_request != null else (ActionRequestScript.from_card("player", card, -1, Engine.get_process_frames()) if card != null else null)
-	hitbox_system.enter_player_recovery()
-	log_message.emit("Player trade recovery lifecycle started: action=%s card=%s recovery_frames=%d." % [
-		player_action_lifecycle_action_id,
-		player_action_lifecycle_card_name,
-		recovery_frames
-	])
-	_record_combat_event("player_action_lifecycle", "Player trade recovery lifecycle started.", {
-		"action_id": player_action_lifecycle_action_id,
-		"card_name": player_action_lifecycle_card_name,
-		"phase": player_action_lifecycle_phase,
-		"recovery_frames": recovery_frames,
-		"authorized_by": "CombatManager"
-	})
+	if player_action_lifecycle_controller != null:
+		player_action_lifecycle_controller.begin_trade_recovery(card, recovery_frames, action_request)
 
 func _player_action_frames_to_seconds(frames: int) -> float:
 	return maxf(0.01, float(maxi(1, frames)) / PLAYER_ACTION_TIMELINE_FPS)
@@ -1605,16 +1491,16 @@ func _wait_for_player_lifecycle_queue_release(action: Dictionary) -> void:
 	if queue_resolver.interrupted_by_trade:
 		log_message.emit("Queue advance blocked by trade recovery for %s." % String(action.get("id", action.get("display_name", "card"))))
 		return
-	while player_action_lifecycle_active \
-		and not player_action_lifecycle_release_authorized \
-		and not player_action_lifecycle_done \
+	while player_action_lifecycle_controller.active \
+		and not player_action_lifecycle_controller.release_authorized \
+		and not player_action_lifecycle_controller.done \
 		and not queue_resolver.interrupted_by_trade \
 		and not combat_over:
 		await player_action_lifecycle_released
 	if queue_resolver.interrupted_by_trade:
 		log_message.emit("Queue advance blocked by trade recovery for %s." % String(action.get("id", action.get("display_name", "card"))))
 		return
-	var reason := player_action_lifecycle_release_reason if player_action_lifecycle_release_reason != "" else "lifecycle_done"
+	var reason: String = player_action_lifecycle_controller.release_reason if player_action_lifecycle_controller.release_reason != "" else "lifecycle_done"
 	log_message.emit("Queue advance authorized: %s for %s." % [reason, String(action.get("id", action.get("display_name", "card")))])
 
 func _on_player_visual_action_finished(animation_name: String, action_state_name: String) -> void:
@@ -2193,7 +2079,7 @@ func _set_frame_advantage_to_neutral() -> void:
 
 func end_player_pressure(reason: String, initiative_result := 0) -> void:
 	_transition_combat_state(CombatStateMachineScript.State.NEUTRAL, "player pressure ended")
-	if not player_action_lifecycle_active:
+	if not player_action_lifecycle_controller.active:
 		current_player_action_request = null
 	initiative_offset = initiative_result
 	if initiative_result < 0:
@@ -3107,26 +2993,8 @@ func _complete_player_card_timeline(card: Resource) -> void:
 	_start_player_action_recovery_lifecycle(card)
 
 func _start_player_action_recovery_lifecycle(card: Resource) -> void:
-	if not player_action_lifecycle_active or player_action_lifecycle_recovery_running:
-		return
-	var token := player_action_lifecycle_token
-	var recovery_frames := maxi(0, int(card.frame_cost)) if card != null else 0
-	player_action_lifecycle_recovery_running = true
-	player_action_lifecycle_recovery_frames_remaining = float(recovery_frames)
-	power_action_player_recovery_frame_accumulator = 0.0
-	log_message.emit("Player action recovery started: %s %df." % [player_action_lifecycle_action_id, recovery_frames])
-	if recovery_frames <= 0:
-		_finish_player_action_lifecycle(token, "zero_recovery")
-		return
-	await get_tree().create_timer(_player_action_frames_to_seconds(recovery_frames), false, true).timeout
-	if token != player_action_lifecycle_token or not player_action_lifecycle_active:
-		return
-	if is_power_action_mode():
-		player_action_lifecycle_recovery_frames_remaining = 0.0
-		_finish_player_action_lifecycle(token, "recovery_complete")
-		return
-	advance_combat_frames(recovery_frames)
-	_finish_player_action_lifecycle(token, "recovery_complete")
+	if player_action_lifecycle_controller != null:
+		player_action_lifecycle_controller.start_recovery(card)
 
 func _tick_debug_hitboxes(delta: float) -> void:
 	hitbox_system.tick_debug_hitboxes(delta)
@@ -3355,12 +3223,12 @@ func _tick_trade_recovery_frames(frames: float) -> void:
 	var had_player_recovery := player_trade_recovery_frames_remaining > 0.0
 	player_trade_recovery_frames_remaining = maxf(0.0, player_trade_recovery_frames_remaining - frames)
 	enemy_trade_recovery_frames_remaining = maxf(0.0, enemy_trade_recovery_frames_remaining - frames)
-	if player_action_lifecycle_active and player_action_lifecycle_phase == "TRADE_RECOVERY":
-		player_action_lifecycle_recovery_frames_remaining = player_trade_recovery_frames_remaining
+	if player_action_lifecycle_controller.active and player_action_lifecycle_controller.phase == "TRADE_RECOVERY":
+		player_action_lifecycle_controller.recovery_frames_remaining = player_trade_recovery_frames_remaining
 	if had_player_recovery and player_trade_recovery_frames_remaining <= 0.0:
 		log_message.emit("Player trade recovery complete.")
-		if player_action_lifecycle_active and player_action_lifecycle_phase == "TRADE_RECOVERY":
-			_finish_player_action_lifecycle(player_action_lifecycle_token, "trade_recovery_complete")
+		if player_action_lifecycle_controller.active and player_action_lifecycle_controller.phase == "TRADE_RECOVERY":
+			_finish_player_action_lifecycle(player_action_lifecycle_controller.token, "trade_recovery_complete")
 		else:
 			current_player_action_request = null
 		if pending_trade_followup_window and frame_advantage > 0:
@@ -3628,7 +3496,7 @@ func _transition_combat_state(next_state: int, reason := "") -> void:
 func _update_actor_combat_states() -> void:
 	if player_actor_state != null:
 		player_actor_state.update_from_actor(player, combat_state_machine.state_name(combat_state), combat_timeline.action_name if combat_timeline != null and combat_timeline.actor == "PLAYER" else "None", current_player_action_request)
-		player_actor_state.recovery_frames_remaining = int(ceil(maxf(player_trade_recovery_frames_remaining, player_action_lifecycle_recovery_frames_remaining)))
+		player_actor_state.recovery_frames_remaining = int(ceil(maxf(player_trade_recovery_frames_remaining, player_action_lifecycle_controller.recovery_frames_remaining)))
 	if enemy_actor_state != null:
 		enemy_actor_state.update_from_actor(enemy, combat_state_machine.state_name(combat_state), current_enemy_intent if current_enemy_intent != "" else "None", current_enemy_action_request)
 		enemy_actor_state.recovery_frames_remaining = int(ceil(maxf(enemy_trade_recovery_frames_remaining, enemy_action_recovery_frames_remaining))) if enemy_trade_recovery_frames_remaining > 0.0 or enemy_action_recovery_frames_remaining > 0.0 else (remaining_startup_frames if _is_enemy_intent_state() else 0)
@@ -3732,7 +3600,7 @@ func _player_has_stale_defense_visual() -> bool:
 	return action_state.begins_with("BLOCK") or (action_name.to_lower().find("block") != -1 and phase != "DONE")
 
 func _player_has_stale_action_without_request() -> bool:
-	if player_action_lifecycle_active and not player_action_lifecycle_done:
+	if player_action_lifecycle_controller.active and not player_action_lifecycle_controller.done:
 		return false
 	if player_trade_recovery_frames_remaining > 0.0:
 		return false
@@ -3756,7 +3624,7 @@ func _player_debug() -> Dictionary:
 	return {}
 
 func _player_has_real_action_lifecycle() -> bool:
-	if player_action_lifecycle_active and not player_action_lifecycle_done:
+	if player_action_lifecycle_controller.active and not player_action_lifecycle_controller.done:
 		return true
 	if player_trade_recovery_frames_remaining > 0.0:
 		return true
@@ -3781,7 +3649,7 @@ func _player_visual_return_pending() -> bool:
 	return bool(debug.get("visual_return_pending", false))
 
 func _player_has_stale_idle_lock() -> bool:
-	if player_action_lifecycle_active and not player_action_lifecycle_done:
+	if player_action_lifecycle_controller.active and not player_action_lifecycle_controller.done:
 		return false
 	if player_trade_recovery_frames_remaining > 0.0:
 		return false
@@ -3799,7 +3667,7 @@ func _player_has_stale_idle_lock() -> bool:
 func _player_has_stale_player_recovery_state() -> bool:
 	if combat_state_machine.current_state != CombatStateMachineScript.State.PLAYER_RECOVERY:
 		return false
-	if player_action_lifecycle_active and not player_action_lifecycle_done:
+	if player_action_lifecycle_controller.active and not player_action_lifecycle_controller.done:
 		return false
 	if player_trade_recovery_frames_remaining > 0.0:
 		return false
