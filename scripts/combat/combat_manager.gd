@@ -38,6 +38,7 @@ const TacticalModeControllerScript := preload("res://scripts/combat/tactical_mod
 const PowerFightingModeControllerScript := preload("res://scripts/combat/power_fighting_mode_controller.gd")
 const CombatAnimationControllerScript := preload("res://scripts/combat/animation_controller.gd")
 const CombatDebugExporterScript := preload("res://scripts/combat/combat_debug_exporter.gd")
+const CombatTraceLoggerScript := preload("res://scripts/combat/combat_trace_logger.gd")
 const DEBUG_ATTACK_HITBOX_LIFETIME := 0.25
 
 enum ControlMode { TIME_TACTICAL, POWER_ACTION }
@@ -102,7 +103,6 @@ var last_enemy_attack_hitbox := Rect2()
 var player_attack_hitbox_lifetime := 0.0
 var enemy_attack_hitbox_lifetime := 0.0
 var combat_frame_context := ""
-var combat_trace_events: Array[Dictionary] = []
 var defensive_reaction_retry_count := 0
 var defensive_reaction_wait_remaining := 0.0
 var defensive_reaction_fallback := "None"
@@ -133,6 +133,7 @@ var combat_core
 var tactical_mode_controller
 var power_fighting_mode_controller
 var combat_animation_controller
+var combat_trace_logger
 var player_actor_state
 var enemy_actor_state
 var current_player_action_request
@@ -228,6 +229,8 @@ func _setup_combat_systems() -> void:
 	power_fighting_mode_controller.setup(self, enemy_lifecycle_controller, player_action_lifecycle_controller)
 	combat_animation_controller = CombatAnimationControllerScript.new()
 	combat_animation_controller.setup(self, player, enemy)
+	combat_trace_logger = CombatTraceLoggerScript.new()
+	combat_trace_logger.setup(self)
 	combat_input_router = CombatInputRouterScript.new()
 	player_actor_state = ActorCombatStateScript.new()
 	player_actor_state.setup("player")
@@ -299,7 +302,7 @@ func _log_architecture_validation() -> void:
 	var active_path: String = get_script().resource_path
 	var legacy_present := ResourceLoader.exists("res://scripts/combat_manager.gd")
 	log_message.emit("Active combat manager: %s (CombatManagerCore)." % active_path)
-	log_message.emit("Loaded combat systems: CombatCore, CombatClock, CombatTimeline, FrameSystem, QueueResolver, RouteSystem, MovementSystem, MovementFlowSystem, HitboxSystem, TradeSystem, StanceSystem, StanceDamageResolver, EnemyAISystem, EnemyLifecycleController, PlayerActionLifecycleController, ReactionWindowSystem, CombatStateMachine, CombatInputRouter, TacticalModeController, PowerFightingModeController, CombatAnimationController.")
+	log_message.emit("Loaded combat systems: CombatCore, CombatClock, CombatTimeline, FrameSystem, QueueResolver, RouteSystem, MovementSystem, MovementFlowSystem, HitboxSystem, TradeSystem, StanceSystem, StanceDamageResolver, EnemyAISystem, EnemyLifecycleController, PlayerActionLifecycleController, ReactionWindowSystem, CombatStateMachine, CombatInputRouter, TacticalModeController, PowerFightingModeController, CombatAnimationController, CombatTraceLogger.")
 	log_message.emit("CombatCore gameplay clock: %d FPS." % int(CombatCoreScript.GAMEPLAY_FPS))
 	log_message.emit("Legacy combat manager present: %s." % str(legacy_present))
 
@@ -447,41 +450,25 @@ func _input_lock_state() -> String:
 	return "locked"
 
 func get_combat_trace_events() -> Array:
-	return combat_trace_events.duplicate(true)
+	if combat_trace_logger == null:
+		return []
+	return combat_trace_logger.get_combat_trace_events()
 
 func _record_combat_event(event_type: String, message := "", data := {}) -> void:
-	var event: Dictionary = data.duplicate(true)
-	event["event_type"] = event_type
-	event["timestamp"] = Time.get_datetime_string_from_system()
-	if message != "":
-		event["message"] = message
-	combat_trace_events.append(event)
+	if combat_trace_logger != null:
+		combat_trace_logger.record_combat_event(event_type, message, data)
 
 func _record_action_lifecycle_event(event_type: String, data := {}) -> void:
-	var event: Dictionary = data.duplicate(true)
-	_record_combat_event(event_type, event_type, event)
-	var actor := String(event.get("actor", "actor"))
-	var move_id := String(event.get("move_id", "unknown"))
-	log_message.emit("%s %s %s." % [actor.to_upper(), move_id, event_type])
+	if combat_trace_logger != null:
+		combat_trace_logger.record_action_lifecycle_event(event_type, data)
 
 func _record_rejected_action(actor: String, reason: String, move_id := "") -> void:
-	_record_action_lifecycle_event("REJECTED_ACTION", {
-		"actor": actor,
-		"move_id": move_id,
-		"reason": reason,
-		"rejection_reason": reason,
-		"global_combat_state": _current_mode(),
-		"player_phase": _player_phase_for_log(),
-		"enemy_phase": _enemy_phase_for_log(),
-		"player_can_act": _power_action_player_can_act(),
-		"enemy_can_act": _power_action_enemy_can_act()
-	})
+	if combat_trace_logger != null:
+		combat_trace_logger.record_rejected_action(actor, reason, move_id)
 
 func _action_request_source_name(action_request) -> String:
-	if action_request is ActionRequestScript:
-		return action_request.source_type_name()
-	if action_request is Dictionary:
-		return String(action_request.get("source_type", "unknown"))
+	if combat_trace_logger != null:
+		return combat_trace_logger.action_request_source_name(action_request)
 	return "none"
 
 func _player_phase_for_log() -> String:
