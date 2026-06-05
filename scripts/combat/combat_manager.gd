@@ -3918,100 +3918,24 @@ func _clear_tactical_queue() -> void:
 	frame_advantage_changed.emit(frame_advantage)
 
 func _execute_or_wait_tactical_queue() -> void:
-	if _queue_is_resolving():
+	if tactical_mode_controller == null:
 		return
-	if not _can_execute_queue():
-		log_message.emit("Queue execution rejected: state=%s." % _current_mode())
-		return
-	if _is_slow_neutral_state() and queue_resolver.is_empty():
-		log_message.emit("No queued action. Keep moving or queue a card.")
-		return
-	if _is_slow_neutral_state():
-		log_message.emit("Queue execution started.")
-		await _execute_slow_neutral_queue()
-		return
-	queue_resolver.interrupted_by_trade = false
-	if queue_resolver.is_empty():
-		log_message.emit("Player waited.")
-		if _is_enemy_intent_state():
-			await _resolve_enemy_intent("wait")
-		elif _can_take_pressure_movement():
-			_spend_pressure_frames(1)
-		return
-
-	_set_queue_resolving(true, "execute tactical queue")
-	while not queue_resolver.is_empty() and _is_tactical_mode():
-		var action: Dictionary = queue_resolver.pop_front()
-		queued_action_in_progress = true
-		await _resolve_queued_action(action)
-		await _wait_for_player_lifecycle_queue_release(action)
-		queued_action_in_progress = false
-		frame_advantage_changed.emit(frame_advantage)
-		if queue_resolver.interrupted_by_trade:
-			log_message.emit("Queue stopped after trade.")
-			queue_resolver.clear()
-			break
-		await _pause_between_queued_actions()
-	_set_queue_resolving(false, "queue complete")
-	if not _is_tactical_mode():
-		queue_resolver.clear()
+	await tactical_mode_controller.execute_or_wait_tactical_queue()
 
 func _execute_slow_neutral_queue() -> void:
-	var had_enemy_intent := _distance_between_fighters() <= enemy_intent_range
-	_exit_slow_neutral()
-	if had_enemy_intent:
-		_run_enemy_attack(false)
-	_set_queue_resolving(true, "execute slow neutral queue")
-	queue_resolver.interrupted_by_trade = false
-	while not queue_resolver.is_empty() and (_is_enemy_intent_state() or not had_enemy_intent) and not combat_over:
-		var action: Dictionary = queue_resolver.pop_front()
-		queued_action_in_progress = true
-		await _resolve_queued_action(action)
-		await _wait_for_player_lifecycle_queue_release(action)
-		queued_action_in_progress = false
-		frame_advantage_changed.emit(frame_advantage)
-		if queue_resolver.interrupted_by_trade:
-			log_message.emit("Queue stopped after trade.")
-			queue_resolver.clear()
-			break
-		await _pause_between_queued_actions()
-	_set_queue_resolving(false, "slow neutral queue complete")
-	if _is_enemy_intent_state() and not _is_reaction_window_state() and not combat_over and not is_power_action_mode():
-		_start_reaction_window(current_enemy_intent, remaining_startup_frames)
-		_transition_combat_state(CombatStateMachineScript.State.REACTION_WINDOW, "reaction window started after queue")
-		_update_time_scale()
-	if not _is_enemy_intent_state():
-		queue_resolver.clear()
-		if frame_advantage <= 0 and not combat_over:
-			_schedule_enemy_if_needed()
+	if tactical_mode_controller == null:
+		return
+	await tactical_mode_controller.execute_slow_neutral_queue()
 
 func _resolve_queued_action(action: Dictionary) -> void:
-	if action.get("type", "") == "CARD":
-		_clear_attack_hitboxes()
-		log_message.emit("Action snapshot executed: %s." % _snapshot_debug_text(action))
-		_warn_if_snapshot_changed(action)
-		if _is_enemy_intent_state():
-			await _try_interrupt_with_card_snapshot(action)
-		elif _can_take_pressure_movement():
-			await _resolve_pressure_card_snapshot(action)
-		else:
-			log_message.emit("Pre-emptive card resolved during enemy approach.")
-			await _resolve_pressure_card_snapshot(action)
+	if tactical_mode_controller == null:
 		return
-
-	var combat_action := _combat_action_from_queued_action(String(action.get("type", "")))
-	if combat_action == "":
-		return
-	if _is_enemy_intent_state():
-		await _resolve_enemy_intent(combat_action)
-	elif _can_take_pressure_movement():
-		_apply_pressure_movement(combat_action)
+	await tactical_mode_controller.resolve_queued_action(action)
 
 func _pause_between_queued_actions() -> void:
-	if queue_resolver.is_empty():
+	if tactical_mode_controller == null:
 		return
-	await get_tree().create_timer(0.2, true, false, true).timeout
-	_clear_attack_hitboxes()
+	await tactical_mode_controller.pause_between_queued_actions()
 
 func _queued_action_from_key(keycode: Key) -> Dictionary:
 	match keycode:

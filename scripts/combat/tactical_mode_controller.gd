@@ -2,6 +2,7 @@ class_name TacticalModeController
 extends RefCounted
 
 const ActionRequestScript := preload("res://scripts/combat/action_request.gd")
+const CombatStateMachineScript := preload("res://scripts/combat/combat_state_machine.gd")
 
 var manager
 var deck_manager
@@ -28,6 +29,106 @@ func tick_tactical_mode(delta: float, tick_stage := TICK_PROCESS_FLOW) -> void:
 			manager._tick_reaction_window(delta)
 			manager._tick_slow_neutral(delta)
 			manager._tick_reaction_jump_arc(delta)
+
+func execute_or_wait_tactical_queue() -> void:
+	if manager == null or queue_resolver == null:
+		return
+	if manager._queue_is_resolving():
+		return
+	if not manager._can_execute_queue():
+		manager.log_message.emit("Queue execution rejected: state=%s." % manager._current_mode())
+		return
+	if manager._is_slow_neutral_state() and queue_resolver.is_empty():
+		manager.log_message.emit("No queued action. Keep moving or queue a card.")
+		return
+	if manager._is_slow_neutral_state():
+		manager.log_message.emit("Queue execution started.")
+		await execute_slow_neutral_queue()
+		return
+	queue_resolver.interrupted_by_trade = false
+	if queue_resolver.is_empty():
+		manager.log_message.emit("Player waited.")
+		if manager._is_enemy_intent_state():
+			await manager._resolve_enemy_intent("wait")
+		elif manager._can_take_pressure_movement():
+			manager._spend_pressure_frames(1)
+		return
+
+	manager._set_queue_resolving(true, "execute tactical queue")
+	while not queue_resolver.is_empty() and manager._is_tactical_mode():
+		var action: Dictionary = queue_resolver.pop_front()
+		manager.queued_action_in_progress = true
+		await resolve_queued_action(action)
+		await manager._wait_for_player_lifecycle_queue_release(action)
+		manager.queued_action_in_progress = false
+		manager.frame_advantage_changed.emit(manager.frame_advantage)
+		if queue_resolver.interrupted_by_trade:
+			manager.log_message.emit("Queue stopped after trade.")
+			queue_resolver.clear()
+			break
+		await pause_between_queued_actions()
+	manager._set_queue_resolving(false, "queue complete")
+	if not manager._is_tactical_mode():
+		queue_resolver.clear()
+
+func execute_slow_neutral_queue() -> void:
+	if manager == null or queue_resolver == null:
+		return
+	var had_enemy_intent: bool = float(manager._distance_between_fighters()) <= float(manager.enemy_intent_range)
+	manager._exit_slow_neutral()
+	if had_enemy_intent:
+		manager._run_enemy_attack(false)
+	manager._set_queue_resolving(true, "execute slow neutral queue")
+	queue_resolver.interrupted_by_trade = false
+	while not queue_resolver.is_empty() and (manager._is_enemy_intent_state() or not had_enemy_intent) and not manager.combat_over:
+		var action: Dictionary = queue_resolver.pop_front()
+		manager.queued_action_in_progress = true
+		await resolve_queued_action(action)
+		await manager._wait_for_player_lifecycle_queue_release(action)
+		manager.queued_action_in_progress = false
+		manager.frame_advantage_changed.emit(manager.frame_advantage)
+		if queue_resolver.interrupted_by_trade:
+			manager.log_message.emit("Queue stopped after trade.")
+			queue_resolver.clear()
+			break
+		await pause_between_queued_actions()
+	manager._set_queue_resolving(false, "slow neutral queue complete")
+	if manager._is_enemy_intent_state() and not manager._is_reaction_window_state() and not manager.combat_over and not manager.is_power_action_mode():
+		manager._start_reaction_window(manager.current_enemy_intent, manager.remaining_startup_frames)
+		manager._transition_combat_state(CombatStateMachineScript.State.REACTION_WINDOW, "reaction window started after queue")
+		manager._update_time_scale()
+	if not manager._is_enemy_intent_state():
+		queue_resolver.clear()
+		if manager.frame_advantage <= 0 and not manager.combat_over:
+			manager._schedule_enemy_if_needed()
+
+func resolve_queued_action(action: Dictionary) -> void:
+	if action.get("type", "") == "CARD":
+		manager._clear_attack_hitboxes()
+		manager.log_message.emit("Action snapshot executed: %s." % manager._snapshot_debug_text(action))
+		manager._warn_if_snapshot_changed(action)
+		if manager._is_enemy_intent_state():
+			await manager._try_interrupt_with_card_snapshot(action)
+		elif manager._can_take_pressure_movement():
+			await manager._resolve_pressure_card_snapshot(action)
+		else:
+			manager.log_message.emit("Pre-emptive card resolved during enemy approach.")
+			await manager._resolve_pressure_card_snapshot(action)
+		return
+
+	var combat_action: String = manager._combat_action_from_queued_action(String(action.get("type", "")))
+	if combat_action == "":
+		return
+	if manager._is_enemy_intent_state():
+		await manager._resolve_enemy_intent(combat_action)
+	elif manager._can_take_pressure_movement():
+		manager._apply_pressure_movement(combat_action)
+
+func pause_between_queued_actions() -> void:
+	if queue_resolver == null or queue_resolver.is_empty():
+		return
+	await manager.get_tree().create_timer(0.2, true, false, true).timeout
+	manager._clear_attack_hitboxes()
 
 func action_request_from_card(card: Resource, queued_index := -1, input_frame := 0) -> ActionRequest:
 	return ActionRequestScript.from_card("player", card, queued_index, input_frame)
