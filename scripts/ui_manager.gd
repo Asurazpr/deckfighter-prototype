@@ -592,6 +592,8 @@ func _try_play_card_from_number(index: int) -> void:
 		_on_log_message("Card not playable.")
 
 func _try_play_card(index: int) -> bool:
+	if combat_manager != null and combat_manager.has_method("log_card_playability_debug"):
+		combat_manager.log_card_playability_debug(index, "ui_card_click")
 	if combat_manager == null or not combat_manager.is_hand_card_playable(index):
 		if combat_manager != null and combat_manager.has_method("get_card_input_rejection_reason"):
 			var reason := String(combat_manager.get_card_input_rejection_reason(index))

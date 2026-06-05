@@ -98,7 +98,7 @@ func exit() -> void:
 		_clear_player_locomotion_visual()
 	player.set_free_movement_enabled(false)
 
-func tick(delta: float) -> Dictionary:
+func tick(delta: float, allow_enemy_approach := true) -> Dictionary:
 	if not active:
 		return {"should_start_intent": false}
 	elapsed += delta
@@ -111,7 +111,17 @@ func tick(delta: float) -> Dictionary:
 		_tick_player_jump(delta)
 	else:
 		_tick_player_step(delta)
-	_tick_enemy_approach_step(delta)
+	if allow_enemy_approach:
+		_tick_enemy_approach_step(delta)
+	else:
+		enemy_approach_active = false
+		if _enemy_movement_logged:
+			manager.log_message.emit("Enemy movement animation stopped.")
+			manager.log_message.emit("Enemy returned to guard pose.")
+			if enemy != null and enemy.has_method("clear_timeline_visual"):
+				enemy.clear_timeline_visual()
+			_enemy_movement_logged = false
+		_reset_enemy_step()
 	if _player_jump_active():
 		movement_system.clamp_duel_max_distance()
 	else:
@@ -120,7 +130,7 @@ func tick(delta: float) -> Dictionary:
 	distance_change_rate = (current_distance - previous_distance) / maxf(delta, 0.001)
 	last_distance = current_distance
 	_log_state_changes()
-	var reached_intent_range := current_distance <= approach_target_distance and not _player_jump_active()
+	var reached_intent_range := allow_enemy_approach and current_distance <= approach_target_distance and not _player_jump_active()
 	if reached_intent_range and not _enemy_reached_range_logged:
 		enemy_approach_end_reason = "distance %.0f <= target %.0f" % [current_distance, approach_target_distance]
 		manager.log_message.emit("Enemy reached range; evaluating intent.")

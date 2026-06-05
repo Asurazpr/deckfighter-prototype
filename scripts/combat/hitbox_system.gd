@@ -164,6 +164,9 @@ func activate_player_card(card: Resource) -> Dictionary:
 	_set_player_active_rect(rect)
 	var defender_hurtbox := enemy_hurtbox()
 	var overlaps := rect.size == Vector2.ZERO or rect.intersects(defender_hurtbox)
+	var defender_state := _defender_state(enemy)
+	if overlaps and _move_evaded_by_defender_state(player_move, defender_state):
+		overlaps = false
 	var result := _resolution("player", player_move, rect, overlaps, defender_hurtbox)
 	_last_check = _build_check_trace(player, enemy, player_move, player_move_phase, rect, defender_hurtbox, overlaps, result)
 	return result
@@ -177,6 +180,9 @@ func activate_enemy_attack(attack_data: Dictionary) -> Dictionary:
 	_set_enemy_active_rect(rect)
 	var defender_hurtbox := player_hurtbox()
 	var overlaps := rect.size != Vector2.ZERO and rect.intersects(defender_hurtbox)
+	var defender_state := _defender_state(player)
+	if overlaps and _move_evaded_by_defender_state(enemy_move, defender_state):
+		overlaps = false
 	var result := _resolution("enemy", enemy_move, rect, overlaps, defender_hurtbox)
 	_last_check = _build_check_trace(enemy, player, enemy_move, enemy_move_phase, rect, defender_hurtbox, overlaps, result)
 	return result
@@ -237,6 +243,27 @@ func _normalized_trace_result(result_label: String) -> String:
 	if attack_level == "LOW" and (defender_state == "jumping" or defender_state == "airborne"):
 		return "jump_evade"
 	return normalized
+
+func _move_evaded_by_defender_state(move_def: MoveDefinition, defender_state: String) -> bool:
+	if move_def == null:
+		return false
+	var attack_level := move_def.attack_level
+	if attack_level == "HIGH" and (defender_state == "crouching" or defender_state == "crouch_blocking"):
+		return not _move_hits_crouching(move_def)
+	if attack_level == "LOW" and (defender_state == "jumping" or defender_state == "airborne"):
+		return true
+	return false
+
+func _move_hits_crouching(move_def: MoveDefinition) -> bool:
+	if move_def == null:
+		return false
+	if bool(move_def.source_data.get("hits_crouching", false)):
+		return true
+	for tag in move_def.tags:
+		var normalized := String(tag).to_lower()
+		if normalized == "hits_crouching" or normalized == "crouch_hitting":
+			return true
+	return false
 
 func _move_rect_for_actor(move_def: MoveDefinition, actor: Node2D, facing_direction: float) -> Rect2:
 	if move_def == null or actor == null:
