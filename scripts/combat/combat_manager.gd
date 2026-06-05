@@ -24,6 +24,7 @@ const TradeSystemScript := preload("res://scripts/combat/trade_system.gd")
 const StanceSystemScript := preload("res://scripts/combat/stance_system.gd")
 const StanceDamageResolverScript := preload("res://scripts/combat/stance_damage_resolver.gd")
 const EnemyAISystemScript := preload("res://scripts/combat/enemy_ai_system.gd")
+const EnemyLifecycleControllerScript := preload("res://scripts/combat/enemy_lifecycle_controller.gd")
 const CombatTimelineScript := preload("res://scripts/combat/combat_timeline.gd")
 const ReactionWindowSystemScript := preload("res://scripts/combat/reaction_window_system.gd")
 const MovementFlowSystemScript := preload("res://scripts/combat/movement_flow_system.gd")
@@ -120,6 +121,7 @@ var trade_system
 var stance_system
 var stance_damage_resolver
 var enemy_ai_system
+var enemy_lifecycle_controller
 var combat_timeline
 var reaction_window_system
 var movement_flow_system
@@ -216,6 +218,8 @@ func _setup_combat_systems() -> void:
 	stance_damage_resolver = StanceDamageResolverScript.new()
 	enemy_ai_system = EnemyAISystemScript.new()
 	enemy_ai_system.setup(self, enemy, frame_system)
+	enemy_lifecycle_controller = EnemyLifecycleControllerScript.new()
+	enemy_lifecycle_controller.setup(self)
 	combat_timeline = CombatTimelineScript.new()
 	reaction_window_system = ReactionWindowSystemScript.new()
 	reaction_window_system.setup(self, player, PERFECT_BLOCK_REACTION_PROGRESS, REACTION_GUARD_STARTUP_FRAMES)
@@ -228,7 +232,7 @@ func _setup_combat_systems() -> void:
 	tactical_mode_controller = TacticalModeControllerScript.new()
 	tactical_mode_controller.setup(self, deck_manager, queue_resolver)
 	power_fighting_mode_controller = PowerFightingModeControllerScript.new()
-	power_fighting_mode_controller.setup(self)
+	power_fighting_mode_controller.setup(self, enemy_lifecycle_controller)
 	combat_animation_controller = CombatAnimationControllerScript.new()
 	combat_animation_controller.setup(self, player, enemy)
 	combat_input_router = CombatInputRouterScript.new()
@@ -302,7 +306,7 @@ func _log_architecture_validation() -> void:
 	var active_path: String = get_script().resource_path
 	var legacy_present := ResourceLoader.exists("res://scripts/combat_manager.gd")
 	log_message.emit("Active combat manager: %s (CombatManagerCore)." % active_path)
-	log_message.emit("Loaded combat systems: CombatCore, CombatClock, CombatTimeline, FrameSystem, QueueResolver, RouteSystem, MovementSystem, MovementFlowSystem, HitboxSystem, TradeSystem, StanceSystem, StanceDamageResolver, EnemyAISystem, ReactionWindowSystem, CombatStateMachine, CombatInputRouter, TacticalModeController, PowerFightingModeController, CombatAnimationController.")
+	log_message.emit("Loaded combat systems: CombatCore, CombatClock, CombatTimeline, FrameSystem, QueueResolver, RouteSystem, MovementSystem, MovementFlowSystem, HitboxSystem, TradeSystem, StanceSystem, StanceDamageResolver, EnemyAISystem, EnemyLifecycleController, ReactionWindowSystem, CombatStateMachine, CombatInputRouter, TacticalModeController, PowerFightingModeController, CombatAnimationController.")
 	log_message.emit("CombatCore gameplay clock: %d FPS." % int(CombatCoreScript.GAMEPLAY_FPS))
 	log_message.emit("Legacy combat manager present: %s." % str(legacy_present))
 
@@ -3312,39 +3316,20 @@ func _tick_trade_recovery(delta: float) -> void:
 	_tick_trade_recovery_frames(delta * 60.0)
 
 func _tick_enemy_action_recovery(delta: float) -> void:
-	if is_power_action_mode():
-		return
-	if combat_state_machine == null or combat_state_machine.current_state != CombatStateMachineScript.State.ENEMY_RECOVERY:
-		return
-	if enemy_action_recovery_frames_remaining <= 0.0:
-		return
-	var tick: Dictionary = _consume_gameplay_frames(delta, enemy_action_recovery_frame_accumulator)
-	enemy_action_recovery_frame_accumulator = float(tick.get("accumulator", enemy_action_recovery_frame_accumulator))
-	var frames := int(tick.get("frames", 0))
-	if frames <= 0:
-		return
-	enemy_action_recovery_frames_remaining = maxf(0.0, enemy_action_recovery_frames_remaining - float(frames))
-	if combat_timeline != null and combat_timeline.actor == "ENEMY":
-		combat_timeline.advance_frames(frames)
-		_show_enemy_timeline_phase()
-	if enemy_action_recovery_frames_remaining <= 0.0:
-		_finish_enemy_resolution("recovery_complete")
+	if enemy_lifecycle_controller != null:
+		enemy_lifecycle_controller.tick_tactical_recovery(delta)
 
 func _tick_power_action_enemy_recovery(delta: float) -> void:
-	if power_fighting_mode_controller != null:
-		power_fighting_mode_controller.tick_enemy_recovery(delta)
+	if enemy_lifecycle_controller != null:
+		enemy_lifecycle_controller.tick_power_recovery(delta)
 
 func _tick_power_action_enemy_decision_cooldown(delta: float) -> void:
-	if not is_power_action_mode() or power_action_enemy_decision_cooldown_remaining <= 0.0:
-		return
-	var frames := float(_frames_for_delta(delta))
-	power_action_enemy_decision_cooldown_remaining = maxf(0.0, power_action_enemy_decision_cooldown_remaining - frames)
-	if power_action_enemy_decision_cooldown_remaining <= 0.0:
-		last_power_action_enemy_reject_reason = ""
+	if enemy_lifecycle_controller != null:
+		enemy_lifecycle_controller.tick_power_decision_cooldown(delta)
 
 func _tick_power_action_enemy_hitstun(delta: float) -> void:
-	if power_fighting_mode_controller != null:
-		power_fighting_mode_controller.tick_enemy_hitstun(delta)
+	if enemy_lifecycle_controller != null:
+		enemy_lifecycle_controller.tick_power_hitstun(delta)
 
 func _tick_power_action_player_recovery(delta: float) -> void:
 	if power_fighting_mode_controller != null:

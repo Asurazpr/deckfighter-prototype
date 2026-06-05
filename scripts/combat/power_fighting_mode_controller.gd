@@ -5,6 +5,7 @@ const ActionRequestScript := preload("res://scripts/combat/action_request.gd")
 const CombatStateMachineScript := preload("res://scripts/combat/combat_state_machine.gd")
 
 var manager
+var enemy_lifecycle_controller
 var direct_input_map := {
 	"J": "light_punch",
 	"K": "light_kick",
@@ -16,8 +17,9 @@ const TICK_PROCESS_PRE := "process_pre"
 const TICK_PROCESS_FLOW := "process_flow"
 const TICK_PHYSICS := "physics"
 
-func setup(manager_ref) -> void:
+func setup(manager_ref, enemy_lifecycle_controller_ref = null) -> void:
 	manager = manager_ref
+	enemy_lifecycle_controller = enemy_lifecycle_controller_ref
 
 func tick_power_mode(delta: float, tick_stage := TICK_PHYSICS) -> void:
 	if manager == null or manager.combat_over or not manager.is_power_action_mode():
@@ -33,9 +35,11 @@ func tick_power_mode(delta: float, tick_stage := TICK_PHYSICS) -> void:
 			manager._tick_power_action_block(delta)
 			manager._tick_power_action_enemy_intent(delta)
 			manager._tick_power_action_enemy_active(delta)
-			tick_enemy_recovery(delta)
-			manager._tick_power_action_enemy_decision_cooldown(delta)
-			tick_enemy_hitstun(delta)
+			var enemy_lifecycle = _enemy_lifecycle()
+			if enemy_lifecycle != null:
+				enemy_lifecycle.tick_power_recovery(delta)
+				enemy_lifecycle.tick_power_decision_cooldown(delta)
+				enemy_lifecycle.tick_power_hitstun(delta)
 			tick_player_recovery(delta)
 			tick_live_frame_advantage()
 
@@ -52,38 +56,27 @@ func request_direct_action(input_name: String, move_id: String) -> ActionRequest
 	return action_request_for_input(input_name, move_id, Engine.get_process_frames(), {
 		"source_controller": "PowerFightingModeController"
 	})
+func _enemy_lifecycle():
+	if enemy_lifecycle_controller != null:
+		return enemy_lifecycle_controller
+	if manager != null:
+		return manager.enemy_lifecycle_controller
+	return null
 
 func tick_enemy_recovery(delta: float) -> void:
-	if manager == null or not manager.is_power_action_mode() or manager.combat_over:
-		return
-	if manager.combat_state_machine == null or manager.combat_state_machine.current_state != CombatStateMachineScript.State.ENEMY_RECOVERY:
-		return
-	if manager.enemy_action_recovery_frames_remaining <= 0.0:
-		return
-	var tick: Dictionary = manager._consume_gameplay_frames(delta, manager.power_action_enemy_recovery_frame_accumulator)
-	manager.power_action_enemy_recovery_frame_accumulator = float(tick.get("accumulator", manager.power_action_enemy_recovery_frame_accumulator))
-	var frames: int = int(tick.get("frames", 0))
-	if frames <= 0:
-		return
-	manager.enemy_action_recovery_frames_remaining = maxf(0.0, manager.enemy_action_recovery_frames_remaining - float(frames))
-	manager.power_action_enemy_recovery_frames_elapsed += float(frames)
-	if manager.combat_timeline != null and manager.combat_timeline.actor == "ENEMY":
-		manager.combat_timeline.advance_frames(frames)
-		manager._show_enemy_timeline_phase()
-	if manager.enemy_action_recovery_frames_remaining <= 0.0:
-		manager._finish_enemy_resolution("recovery_complete")
+	var enemy_lifecycle = _enemy_lifecycle()
+	if enemy_lifecycle != null:
+		enemy_lifecycle.tick_power_recovery(delta)
+
+func tick_enemy_decision_cooldown(delta: float) -> void:
+	var enemy_lifecycle = _enemy_lifecycle()
+	if enemy_lifecycle != null:
+		enemy_lifecycle.tick_power_decision_cooldown(delta)
 
 func tick_enemy_hitstun(delta: float) -> void:
-	if manager == null or not manager.is_power_action_mode() or manager.enemy_vulnerable_frames_remaining <= 0:
-		return
-	var tick: Dictionary = manager._consume_gameplay_frames(delta, manager.power_action_enemy_hitstun_frame_accumulator)
-	manager.power_action_enemy_hitstun_frame_accumulator = float(tick.get("accumulator", manager.power_action_enemy_hitstun_frame_accumulator))
-	var frames: int = int(tick.get("frames", 0))
-	if frames <= 0:
-		return
-	manager.enemy_vulnerable_frames_remaining = maxi(0, manager.enemy_vulnerable_frames_remaining - frames)
-	if manager.enemy_vulnerable_frames_remaining <= 0:
-		manager.last_power_action_enemy_reject_reason = ""
+	var enemy_lifecycle = _enemy_lifecycle()
+	if enemy_lifecycle != null:
+		enemy_lifecycle.tick_power_hitstun(delta)
 
 func tick_player_recovery(delta: float) -> void:
 	if manager == null or not manager.is_power_action_mode() or manager.combat_over:
@@ -137,22 +130,10 @@ func player_lock_frames() -> int:
 	return remaining
 
 func enemy_lock_frames() -> int:
-	if manager == null:
-		return 0
-	var remaining: int = 0
-	if manager.current_enemy_intent != "" and manager.remaining_startup_frames > 0:
-		remaining = maxi(remaining, manager.remaining_startup_frames)
-	if manager.power_action_enemy_active_frames_remaining > 0.0:
-		remaining = maxi(remaining, int(ceil(manager.power_action_enemy_active_frames_remaining)))
-	if manager.enemy_action_recovery_frames_remaining > 0.0:
-		remaining = maxi(remaining, int(ceil(manager.enemy_action_recovery_frames_remaining)))
-	if manager.enemy_vulnerable_frames_remaining > 0:
-		remaining = maxi(remaining, manager.enemy_vulnerable_frames_remaining)
-	if manager.enemy_trade_recovery_frames_remaining > 0.0:
-		remaining = maxi(remaining, int(ceil(manager.enemy_trade_recovery_frames_remaining)))
-	if manager._enemy_break_frames_remaining() > 0:
-		remaining = maxi(remaining, manager._enemy_break_frames_remaining())
-	return remaining
+	var enemy_lifecycle = _enemy_lifecycle()
+	if enemy_lifecycle != null:
+		return enemy_lifecycle.lock_frames()
+	return 0
 
 func player_reject_reason() -> String:
 	if manager == null:
@@ -180,7 +161,8 @@ func player_can_act() -> bool:
 	return manager != null and manager.is_power_action_mode() and player_reject_reason() == ""
 
 func enemy_can_act() -> bool:
-	return manager != null and manager.is_power_action_mode() and enemy_reject_reason() == ""
+	var enemy_lifecycle = _enemy_lifecycle()
+	return enemy_lifecycle != null and enemy_lifecycle.can_act_for_power()
 
 func block_reject_reason() -> String:
 	if manager == null:
@@ -255,34 +237,11 @@ func movement_reject_reason() -> String:
 	return ""
 
 func enemy_locked() -> bool:
-	if manager == null:
-		return true
-	return manager.attack_in_progress \
-		or manager.waiting_for_defense \
-		or manager.current_enemy_intent != "" \
-		or manager.power_action_enemy_decision_cooldown_remaining > 0.0 \
-		or manager._enemy_recovery_frames_remaining() > 0 \
-		or manager.enemy_vulnerable_frames_remaining > 0 \
-		or manager._enemy_break_frames_remaining() > 0 \
-		or (manager.enemy != null and not manager.enemy.can_act())
+	var enemy_lifecycle = _enemy_lifecycle()
+	return enemy_lifecycle == null or enemy_lifecycle.locked_for_power()
 
 func enemy_reject_reason() -> String:
-	if manager == null:
-		return "missing_manager"
-	if manager.combat_state_machine != null and manager.combat_state_machine.current_state == CombatStateMachineScript.State.ENEMY_ACTIVE:
-		return "already_active"
-	if manager._enemy_recovery_frames_remaining() > 0:
-		return "recovery"
-	if manager.waiting_for_defense or manager.current_enemy_intent != "":
-		return "startup"
-	if manager.power_action_enemy_decision_cooldown_remaining > 0.0:
-		return "decision_cooldown"
-	if manager.attack_in_progress:
-		return "already_active"
-	if manager.enemy_vulnerable_frames_remaining > 0:
-		return "enemy_hitstun"
-	if manager._enemy_break_frames_remaining() > 0:
-		return "blockstun"
-	if manager.enemy != null and not manager.enemy.can_act():
-		return "interrupted"
-	return ""
+	var enemy_lifecycle = _enemy_lifecycle()
+	if enemy_lifecycle != null:
+		return enemy_lifecycle.reject_reason_for_power()
+	return "missing_manager"
