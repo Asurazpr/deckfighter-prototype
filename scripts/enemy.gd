@@ -7,12 +7,13 @@ signal attack_telegraphed(attack_type: String)
 signal attack_resolved(attack_type: String)
 signal break_started
 signal break_ended
+signal defeated
 
 const CombatAnimationDriver := preload("res://scripts/animation/combat_animation_driver.gd")
 const EnemyMoveData := preload("res://scripts/enemy/enemy_move_data.gd")
 const EnemyStanceConfig := preload("res://scripts/enemy/enemy_stance_config.gd")
 
-enum State { IDLE, TELEGRAPH, ATTACK, BREAK }
+enum State { IDLE, TELEGRAPH, ATTACK, BREAK, DEFEATED }
 enum StanceState { NORMAL, BROKEN_HITSTUN, BROKEN_BLOCKSTUN, RECOVERING_PROTECTED }
 enum DecisionState { NEUTRAL, BLOCKING, PUNISHING, PRESSURING, MASHING, RECOVERING, STUNNED, STANCE_BROKEN, DEFENSIVE_REACTION }
 
@@ -49,6 +50,7 @@ var last_decision_reason := "Ready."
 var last_action_score := 0.0
 var boss_phase_id := "phase_1"
 var intent_ui_visible := true
+var defeated_state := false
 var _telegraph_debug_text := "READY"
 var _telegraph_readability_text := "READY"
 var _telegraph_debug_color := Color.WHITE
@@ -60,6 +62,10 @@ var _telegraph_readability_color := Color.WHITE
 @onready var stance_break_bar: ProgressBar = $StanceBreakBar
 
 func _ready() -> void:
+	defeated_state = false
+	visible = true
+	_set_body_collision_enabled(true)
+	_set_attack_collision_enabled(true)
 	hp = max_hp
 	hp_changed.emit(hp, max_hp)
 	stance_changed.emit(stance, max_stance)
@@ -68,9 +74,23 @@ func _ready() -> void:
 	_set_idle()
 
 func can_act() -> bool:
-	return state == State.IDLE and stance_state == StanceState.NORMAL
+	return not defeated_state and state == State.IDLE and stance_state == StanceState.NORMAL
 
 func reset_for_round_start() -> void:
+	defeated_state = false
+	visible = true
+	set_process(true)
+	set_physics_process(true)
+	_set_body_collision_enabled(true)
+	_set_attack_collision_enabled(true)
+	hp = max_hp
+	stance = 0
+	stance_state = StanceState.NORMAL
+	stance_recovery_frames_remaining = 0
+	stance_break_stun_frames_remaining = 0
+	stance_protection_frames_remaining = 0
+	hp_changed.emit(hp, max_hp)
+	stance_changed.emit(stance, max_stance)
 	if stance_state == StanceState.NORMAL:
 		_set_idle()
 	current_animation_action = "None"
@@ -93,6 +113,8 @@ func start_attack(attack_id := "") -> void:
 	attack_telegraphed.emit(current_attack)
 
 func resolve_attack() -> Dictionary:
+	if defeated_state:
+		return {}
 	if state != State.TELEGRAPH:
 		return {}
 	state = State.ATTACK
@@ -130,14 +152,20 @@ func resolve_attack() -> Dictionary:
 	}
 
 func finish_attack() -> void:
+	if defeated_state:
+		return
 	if state == State.ATTACK:
 		_set_idle()
 
 func clear_intent() -> void:
+	if defeated_state:
+		return
 	if state == State.TELEGRAPH or state == State.ATTACK or state == State.IDLE:
 		_set_idle()
 
 func perform_punish_combo() -> int:
+	if defeated_state:
+		return 0
 	state = State.ATTACK
 	current_attack = "PUNISH"
 	_set_telegraph_text("PUNISH", "PUNISH", Color.WHITE, Color.WHITE)
@@ -147,17 +175,24 @@ func perform_punish_combo() -> int:
 	return punish_damage
 
 func take_hit(damage: int, stance_damage: int) -> void:
+	if defeated_state:
+		return
 	if stance_state == StanceState.BROKEN_HITSTUN:
 		damage = int(ceil(damage * 1.5))
 
 	hp = maxi(0, hp - damage)
 	hp_changed.emit(hp, max_hp)
+	if hp <= 0:
+		enter_defeated_state()
+		return
 	add_stance_damage(stance_damage)
 	CombatAnimationDriver.drive_rig(rig, "hitstun", "IMPACT", 1.0, "", false)
 	CombatAnimationDriver.play_impact(rig)
 	_flash_hit()
 
 func add_stance_damage(amount: int) -> void:
+	if defeated_state:
+		return
 	if _stance_damage_is_protected():
 		if amount > 0:
 			print("Stance protected: ignored %d stance damage" % amount)
@@ -170,6 +205,8 @@ func add_stance_damage(amount: int) -> void:
 		enter_break(false)
 
 func add_block_stance_damage(amount: int) -> void:
+	if defeated_state:
+		return
 	if _stance_damage_is_protected():
 		if amount > 0:
 			print("Stance protected: ignored %d stance damage" % amount)
@@ -182,6 +219,8 @@ func add_block_stance_damage(amount: int) -> void:
 		enter_break(true)
 
 func enter_break(from_block := false) -> void:
+	if defeated_state:
+		return
 	if stance_state != StanceState.NORMAL:
 		return
 	state = State.BREAK
@@ -197,6 +236,8 @@ func enter_break(from_block := false) -> void:
 	break_started.emit()
 
 func advance_stance_recovery_frames(frames: int) -> void:
+	if defeated_state:
+		return
 	if frames <= 0 or stance_state == StanceState.NORMAL:
 		return
 
@@ -230,6 +271,8 @@ func _finish_stance_recovery() -> void:
 	_set_idle()
 
 func set_decision_state(new_state: int, reason := "", score := 0.0) -> void:
+	if defeated_state:
+		return
 	decision_state = new_state
 	last_decision_reason = reason
 	last_action_score = score
@@ -287,6 +330,8 @@ func get_stance_state_name() -> String:
 			return "UNKNOWN"
 
 func _set_idle() -> void:
+	if defeated_state:
+		return
 	if stance_state != StanceState.NORMAL:
 		return
 	state = State.IDLE
@@ -299,6 +344,8 @@ func _set_idle() -> void:
 	CombatAnimationDriver.clear(rig)
 
 func show_timeline_phase(action_name: String, phase_name: String, phase_progress := 0.0, hit_level := "", hitbox_active := false) -> void:
+	if defeated_state:
+		return
 	current_animation_action = action_name
 	current_animation_phase = phase_name
 	current_animation_progress = phase_progress
@@ -326,6 +373,8 @@ func show_timeline_phase(action_name: String, phase_name: String, phase_progress
 	)
 
 func clear_timeline_visual() -> void:
+	if defeated_state:
+		return
 	if stance_state == StanceState.NORMAL:
 		body.color = Color(1.0, 0.28, 0.22)
 		body.scale = Vector2.ONE
@@ -340,6 +389,33 @@ func set_intent_ui_visible(visible: bool) -> void:
 	intent_ui_visible = visible
 	_refresh_telegraph_text()
 
+func is_defeated() -> bool:
+	return defeated_state
+
+func enter_defeated_state() -> void:
+	if defeated_state:
+		return
+	defeated_state = true
+	hp = 0
+	state = State.DEFEATED
+	decision_state = DecisionState.STUNNED
+	current_attack = ""
+	current_animation_action = "Defeated"
+	current_animation_phase = "DONE"
+	current_animation_progress = 0.0
+	current_animation_hit_level = ""
+	current_animation_hitbox_active = false
+	stance_break_stun_frames_remaining = 0
+	stance_protection_frames_remaining = 0
+	stance_recovery_frames_remaining = 0
+	_set_telegraph_text("DEFEATED", "DEFEATED", Color.GRAY, Color.GRAY)
+	_set_body_collision_enabled(false)
+	_set_attack_collision_enabled(false)
+	set_process(false)
+	set_physics_process(false)
+	hide()
+	defeated.emit()
+
 func _set_telegraph_text(debug_text: String, readability_text: String = "", debug_color: Color = Color.WHITE, readability_color: Color = Color.WHITE) -> void:
 	_telegraph_debug_text = debug_text
 	_telegraph_readability_text = readability_text if readability_text != "" else debug_text
@@ -352,6 +428,35 @@ func _refresh_telegraph_text() -> void:
 		return
 	telegraph_label.text = _telegraph_debug_text if intent_ui_visible else _telegraph_readability_text
 	telegraph_label.modulate = _telegraph_debug_color if intent_ui_visible else _telegraph_readability_color
+
+func _set_body_collision_enabled(enabled: bool) -> void:
+	_set_collision_branch_enabled("Pushbox", enabled)
+	_set_collision_branch_enabled("Hurtbox", enabled)
+
+func _set_attack_collision_enabled(enabled: bool) -> void:
+	var area := get_node_or_null("AttackHitbox") as Area2D
+	if area == null:
+		return
+	area.visible = false
+	area.monitoring = enabled
+	area.monitorable = enabled
+	_set_collision_shapes_enabled(area, false)
+
+func _set_collision_branch_enabled(node_path: NodePath, enabled: bool) -> void:
+	var node := get_node_or_null(node_path)
+	if node == null:
+		return
+	if node is Area2D:
+		var area := node as Area2D
+		area.monitoring = enabled
+		area.monitorable = enabled
+	_set_collision_shapes_enabled(node, enabled)
+
+func _set_collision_shapes_enabled(node: Node, enabled: bool) -> void:
+	if node is CollisionShape2D:
+		(node as CollisionShape2D).disabled = not enabled
+	for child in node.get_children():
+		_set_collision_shapes_enabled(child, enabled)
 
 func get_animation_debug() -> Dictionary:
 	return {

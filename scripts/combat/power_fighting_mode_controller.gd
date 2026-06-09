@@ -42,6 +42,7 @@ func tick_power_mode(delta: float, tick_stage := TICK_PHYSICS) -> void:
 				enemy_lifecycle.tick_power_recovery(delta)
 				enemy_lifecycle.tick_power_decision_cooldown(delta)
 				enemy_lifecycle.tick_power_hitstun(delta)
+			manager._tick_power_action_player_hitstun(delta)
 			tick_player_recovery(delta)
 			tick_live_frame_advantage()
 
@@ -119,7 +120,7 @@ func player_lock_frames() -> int:
 		return 0
 	var player_lifecycle = _player_lifecycle()
 	var lifecycle_recovery: float = player_lifecycle.recovery_frames_remaining if player_lifecycle != null else 0.0
-	var remaining: int = int(ceil(maxf(manager.player_trade_recovery_frames_remaining, lifecycle_recovery)))
+	var remaining: int = int(ceil(maxf(maxf(manager.player_trade_recovery_frames_remaining, lifecycle_recovery), manager.power_action_player_hitstun_frames_remaining)))
 	if player_lifecycle != null and player_lifecycle.active and not player_lifecycle.done and remaining <= 0:
 		remaining = 1
 	var debug: Dictionary = manager._player_debug()
@@ -141,6 +142,8 @@ func player_reject_reason() -> String:
 		return "combat_over"
 	if not manager.fight_started:
 		return "fight_not_started"
+	if manager.power_action_player_hitstun_frames_remaining > 0.0:
+		return "hitstun"
 	if manager._queue_is_resolving() or manager.queued_action_in_progress:
 		return "queue_executing"
 	if manager._player_action_locked():
@@ -170,6 +173,8 @@ func block_reject_reason() -> String:
 		return "combat_over"
 	if not manager.fight_started:
 		return "fight_not_started"
+	if manager.power_action_player_hitstun_frames_remaining > 0.0:
+		return "hitstun"
 	if manager.player_trade_recovery_frames_remaining > 0.0:
 		return "player_trade_recovery"
 	if manager._queue_is_resolving() or manager.queued_action_in_progress:
@@ -195,6 +200,8 @@ func crouch_reject_reason() -> String:
 		return "combat_over"
 	if not manager.fight_started:
 		return "fight_not_started"
+	if manager.power_action_player_hitstun_frames_remaining > 0.0:
+		return "hitstun"
 	if manager.player_trade_recovery_frames_remaining > 0.0:
 		return "player_trade_recovery"
 	if manager._queue_is_resolving() or manager.queued_action_in_progress:

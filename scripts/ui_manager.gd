@@ -42,6 +42,9 @@ var enemy_hud_panel: PanelContainer
 var status_hud_panel: PanelContainer
 var player_stance_label: Label
 var player_stance_bar: ProgressBar
+var enemy_hud_title_label: Label
+var enemy_hp_label: Label
+var enemy_stance_label: Label
 var player_hud_on_left := true
 var hud_side_locked := false
 var main_debug_label: Label
@@ -57,6 +60,12 @@ var impact_bar: ProgressBar
 var start_fight_button: Button
 var control_mode_button: Button
 var debug_hint_label: Label
+var pause_overlay: ColorRect
+var pause_panel: PanelContainer
+var pause_title_label: Label
+var resume_button: Button
+var restart_button: Button
+var pause_overlay_mode := ""
 var debug_panels_visible := false
 var enemy_ai_visible := true
 var timing_visible := true
@@ -65,9 +74,11 @@ var readability_mode_enabled := false
 var combat_debug_exporter = CombatDebugExporterScript.new()
 
 func _ready() -> void:
+	process_mode = Node.PROCESS_MODE_ALWAYS
 	_remove_space_from_ui_accept()
 	_configure_static_layout()
 	_build_debug_panels()
+	_build_pause_menu()
 	_apply_debug_visibility()
 
 func _process(_delta: float) -> void:
@@ -83,9 +94,9 @@ func _process(_delta: float) -> void:
 	if timing_label != null and combat_manager.has_method("get_timing_debug_text"):
 		timing_label.text = combat_manager.get_timing_debug_text()
 	if start_fight_button != null and combat_manager.has_method("is_fight_started"):
-		start_fight_button.visible = not bool(combat_manager.is_fight_started())
+		start_fight_button.visible = _should_show_pre_fight_controls()
 	if control_mode_button != null and combat_manager.has_method("is_fight_started"):
-		control_mode_button.visible = not bool(combat_manager.is_fight_started())
+		control_mode_button.visible = _should_show_pre_fight_controls()
 		_refresh_control_mode_button()
 	_refresh_impact_bar()
 	_refresh_queue_label()
@@ -140,6 +151,10 @@ func _on_log_message(message: String) -> void:
 	combat_log_events.append(message)
 	while combat_log_events.size() > MAX_COMBAT_LOG_EVENTS:
 		combat_log_events.pop_front()
+	if message == "ENEMY_DEFEATED" or message == "COMBAT_CLEAR":
+		_show_enemy_defeated_hud()
+	if message == "PLAYER_DEFEATED" or message == "GAME_OVER":
+		_show_game_over_overlay()
 	_refresh_combat_log()
 
 func _on_hand_changed(hand: Array) -> void:
@@ -171,6 +186,19 @@ func _unhandled_key_input(event: InputEvent) -> void:
 
 	if key_event.ctrl_pressed and key_event.keycode == KEY_F1:
 		_toggle_readability_mode()
+		get_viewport().set_input_as_handled()
+		return
+
+	if key_event.keycode == KEY_ESCAPE:
+		if _pause_menu_open():
+			if pause_overlay_mode != "game_over":
+				_resume_from_pause()
+		else:
+			_open_pause_menu()
+		get_viewport().set_input_as_handled()
+		return
+
+	if _pause_menu_open():
 		get_viewport().set_input_as_handled()
 		return
 
@@ -359,6 +387,114 @@ func _build_debug_panels() -> void:
 	debug_hint_label.add_theme_color_override("font_color", Color(0.72, 0.78, 0.84, 0.82))
 	root.add_child(debug_hint_label)
 
+func _build_pause_menu() -> void:
+	pause_overlay = ColorRect.new()
+	pause_overlay.name = "PauseOverlay"
+	pause_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	pause_overlay.color = Color(0.0, 0.0, 0.0, 0.62)
+	pause_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	pause_overlay.visible = false
+	pause_overlay.process_mode = Node.PROCESS_MODE_ALWAYS
+	root.add_child(pause_overlay)
+
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	center.process_mode = Node.PROCESS_MODE_ALWAYS
+	pause_overlay.add_child(center)
+
+	pause_panel = PanelContainer.new()
+	pause_panel.custom_minimum_size = Vector2(340, 230)
+	pause_panel.process_mode = Node.PROCESS_MODE_ALWAYS
+	pause_panel.add_theme_stylebox_override("panel", _panel_style(Color(0.045, 0.05, 0.06, 0.98), Color(0.58, 0.72, 0.92, 0.82)))
+	center.add_child(pause_panel)
+
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 26)
+	margin.add_theme_constant_override("margin_top", 22)
+	margin.add_theme_constant_override("margin_right", 26)
+	margin.add_theme_constant_override("margin_bottom", 22)
+	pause_panel.add_child(margin)
+
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 14)
+	margin.add_child(box)
+
+	pause_title_label = Label.new()
+	pause_title_label.text = "Paused"
+	pause_title_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	pause_title_label.add_theme_font_size_override("font_size", 28)
+	pause_title_label.add_theme_color_override("font_color", Color(0.9, 0.96, 1.0))
+	box.add_child(pause_title_label)
+
+	resume_button = Button.new()
+	resume_button.text = "Resume"
+	resume_button.custom_minimum_size = Vector2(260, 44)
+	resume_button.process_mode = Node.PROCESS_MODE_ALWAYS
+	resume_button.add_theme_font_size_override("font_size", 18)
+	resume_button.add_theme_stylebox_override("normal", _button_style(Color(0.10, 0.16, 0.22, 0.96), Color(0.46, 0.72, 1.0, 0.86)))
+	resume_button.add_theme_stylebox_override("hover", _button_style(Color(0.13, 0.21, 0.30, 0.98), Color(0.62, 0.84, 1.0, 0.95)))
+	resume_button.pressed.connect(_resume_from_pause)
+	box.add_child(resume_button)
+
+	restart_button = Button.new()
+	restart_button.text = "Restart"
+	restart_button.custom_minimum_size = Vector2(260, 44)
+	restart_button.process_mode = Node.PROCESS_MODE_ALWAYS
+	restart_button.add_theme_font_size_override("font_size", 18)
+	restart_button.add_theme_stylebox_override("normal", _button_style(Color(0.18, 0.10, 0.08, 0.96), Color(1.0, 0.58, 0.34, 0.86)))
+	restart_button.add_theme_stylebox_override("hover", _button_style(Color(0.27, 0.14, 0.10, 0.98), Color(1.0, 0.72, 0.46, 0.95)))
+	restart_button.pressed.connect(_restart_current_debug_scene)
+	box.add_child(restart_button)
+
+func _pause_menu_open() -> bool:
+	return pause_overlay != null and pause_overlay.visible
+
+func _open_pause_menu() -> void:
+	if pause_overlay == null:
+		return
+	pause_overlay_mode = "pause"
+	if pause_title_label != null:
+		pause_title_label.text = "Paused"
+	if resume_button != null:
+		resume_button.visible = true
+	pause_overlay.visible = true
+	get_tree().paused = true
+	if resume_button != null:
+		resume_button.grab_focus()
+
+func _resume_from_pause() -> void:
+	if pause_overlay_mode == "game_over":
+		return
+	pause_overlay_mode = ""
+	if pause_overlay != null:
+		pause_overlay.visible = false
+	get_tree().paused = false
+
+func _show_game_over_overlay() -> void:
+	if pause_overlay == null:
+		return
+	pause_overlay_mode = "game_over"
+	if pause_title_label != null:
+		pause_title_label.text = "Game Over"
+	if resume_button != null:
+		resume_button.visible = false
+	pause_overlay.visible = true
+	get_tree().paused = true
+	if restart_button != null:
+		restart_button.grab_focus()
+
+func _restart_current_debug_scene() -> void:
+	var restart_source: String = pause_overlay_mode if pause_overlay_mode != "" else "restart"
+	pause_overlay_mode = ""
+	if pause_overlay != null:
+		pause_overlay.visible = false
+	get_tree().paused = false
+	if combat_manager != null and combat_manager.has_method("reset_run_state_for_restart"):
+		combat_manager.reset_run_state_for_restart(restart_source)
+	var err: Error = get_tree().reload_current_scene()
+	if err != OK:
+		_on_log_message("Restart failed: %s." % error_string(err))
+
 func _build_side_hud_panels(stats_grid: GridContainer) -> void:
 	top_panel.visible = false
 	player_hud_panel = _create_primary_hud_panel("PlayerHUD", "PLAYER")
@@ -368,6 +504,7 @@ func _build_side_hud_panels(stats_grid: GridContainer) -> void:
 	var player_grid := player_hud_panel.get_node("Margin/Box/Grid") as GridContainer
 	var enemy_grid := enemy_hud_panel.get_node("Margin/Box/Grid") as GridContainer
 	var status_box := status_hud_panel.get_node("Margin/Box") as VBoxContainer
+	enemy_hud_title_label = enemy_hud_panel.get_node("Margin/Box/Title") as Label
 
 	_reparent_to_container(stats_grid.get_node("PlayerHPLabel"), player_grid)
 	_reparent_to_container(player_hp_bar, player_grid)
@@ -380,12 +517,15 @@ func _build_side_hud_panels(stats_grid: GridContainer) -> void:
 	player_stance_bar.show_percentage = false
 	_style_progress_bar(player_stance_bar, Color(0.4, 0.86, 1.0))
 	player_grid.add_child(player_stance_bar)
-	_reparent_to_container(stats_grid.get_node("EnemyHPLabel"), enemy_grid)
+	enemy_hp_label = stats_grid.get_node("EnemyHPLabel") as Label
+	enemy_stance_label = stats_grid.get_node("StanceLabel") as Label
+	_reparent_to_container(enemy_hp_label, enemy_grid)
 	_reparent_to_container(enemy_hp_bar, enemy_grid)
-	_reparent_to_container(stats_grid.get_node("StanceLabel"), enemy_grid)
+	_reparent_to_container(enemy_stance_label, enemy_grid)
 	_reparent_to_container(stance_bar, enemy_grid)
 	_reparent_to_container(frame_label, status_box)
 	_reparent_to_container(log_label, status_box)
+	_restore_enemy_hud()
 	_refresh_hud_side()
 
 func _create_primary_hud_panel(panel_name: String, title: String) -> PanelContainer:
@@ -410,6 +550,7 @@ func _create_primary_hud_panel(panel_name: String, title: String) -> PanelContai
 	margin.add_child(box)
 
 	var title_label := Label.new()
+	title_label.name = "Title"
 	title_label.text = title
 	title_label.add_theme_font_size_override("font_size", 14)
 	title_label.add_theme_color_override("font_color", Color(0.78, 0.87, 0.95))
@@ -477,6 +618,32 @@ func _viewport_width() -> float:
 	if root != null and root.size.x > 0.0:
 		return root.size.x
 	return 1600.0
+
+func _show_enemy_defeated_hud() -> void:
+	if enemy_hud_title_label != null:
+		enemy_hud_title_label.text = "DEFEATED"
+		enemy_hud_title_label.add_theme_color_override("font_color", Color(1.0, 0.68, 0.42))
+	if enemy_hp_label != null:
+		enemy_hp_label.visible = false
+	if enemy_hp_bar != null:
+		enemy_hp_bar.visible = false
+	if enemy_stance_label != null:
+		enemy_stance_label.visible = false
+	if stance_bar != null:
+		stance_bar.visible = false
+
+func _restore_enemy_hud() -> void:
+	if enemy_hud_title_label != null:
+		enemy_hud_title_label.text = "ENEMY"
+		enemy_hud_title_label.add_theme_color_override("font_color", Color(0.78, 0.87, 0.95))
+	if enemy_hp_label != null:
+		enemy_hp_label.visible = true
+	if enemy_hp_bar != null:
+		enemy_hp_bar.visible = true
+	if enemy_stance_label != null:
+		enemy_stance_label.visible = true
+	if stance_bar != null:
+		stance_bar.visible = true
 
 func _reparent_to_container(node: Node, container: Node) -> void:
 	if node == null or container == null:
@@ -567,6 +734,15 @@ func _on_start_fight_pressed() -> void:
 	if control_mode_button != null:
 		control_mode_button.visible = false
 	_refresh_card_enabled_state()
+
+func _should_show_pre_fight_controls() -> bool:
+	if combat_manager == null:
+		return false
+	if combat_manager.has_method("should_show_pre_fight_controls"):
+		return bool(combat_manager.should_show_pre_fight_controls())
+	if combat_manager.has_method("is_fight_started"):
+		return not bool(combat_manager.is_fight_started())
+	return false
 
 func _on_control_mode_pressed() -> void:
 	_toggle_control_mode()

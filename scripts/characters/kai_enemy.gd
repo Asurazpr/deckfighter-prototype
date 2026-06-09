@@ -71,6 +71,8 @@ func start_attack(attack_id := "") -> void:
 
 func take_hit(damage: int, stance_damage: int) -> void:
 	super.take_hit(damage, stance_damage)
+	if is_defeated():
+		return
 	_play_kai_animation("heavy_hitstun" if damage >= 14 else "light_hitstun")
 
 func enter_break(from_block := false) -> void:
