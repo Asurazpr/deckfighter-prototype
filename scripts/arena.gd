@@ -60,6 +60,14 @@ var shop_overlay: Control
 var shop_threads_label: Label
 var shop_feedback_label: Label
 var shop_skill_buttons: Dictionary = {}
+var reward_canvas: CanvasLayer
+var reward_overlay: Control
+var reward_subtitle_label: Label
+var reward_preview_label: Label
+var reward_choice_buttons: Array[Button] = []
+var current_reward_choices: Array[String] = []
+var combat_reward_screen_opened := false
+var combat_reward_selected := false
 var current_room_index := 0
 var selected_room_type := "combat"
 var selected_room_id := "debug_start"
@@ -93,6 +101,7 @@ func _ready() -> void:
 	_create_center_axis_debug()
 	_create_wall_debug()
 	_create_room_gate_layer()
+	_create_reward_screen_overlay()
 	_create_fight_camera()
 	_set_combat_geometry_debug_visible(show_combat_geometry_debug, false)
 	ui_manager.bind(player, enemy, deck_manager, combat_manager)
@@ -197,7 +206,7 @@ func _create_room_gate_layer() -> void:
 	room_gate_layer.add_child(room_gate_path_layer)
 
 func _setup_selected_room_behavior() -> void:
-	if selected_room_type == ROOM_TYPE_COMBAT:
+	if _room_type_has_combat_reward():
 		non_combat_room_active = false
 		return
 	_setup_non_combat_room()
@@ -601,6 +610,178 @@ func _set_shop_feedback(message: String) -> void:
 	if shop_feedback_label != null:
 		shop_feedback_label.text = message
 
+func _create_reward_screen_overlay() -> void:
+	reward_canvas = CanvasLayer.new()
+	reward_canvas.name = "CombatRewardCanvas"
+	reward_canvas.layer = 32
+	add_child(reward_canvas)
+
+	var overlay := ColorRect.new()
+	overlay.name = "CombatRewardOverlay"
+	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.color = Color(0.0, 0.0, 0.0, 0.58)
+	overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	overlay.visible = false
+	reward_canvas.add_child(overlay)
+	reward_overlay = overlay
+
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(center)
+
+	var panel := PanelContainer.new()
+	panel.name = "CombatRewardPanel"
+	panel.custom_minimum_size = Vector2(600.0, 390.0)
+	panel.add_theme_stylebox_override("panel", _room_panel_style(Color(0.045, 0.042, 0.052, 0.98), Color(1.0, 0.72, 0.28, 0.84)))
+	center.add_child(panel)
+
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 30)
+	margin.add_theme_constant_override("margin_top", 26)
+	margin.add_theme_constant_override("margin_right", 30)
+	margin.add_theme_constant_override("margin_bottom", 26)
+	panel.add_child(margin)
+
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 14)
+	margin.add_child(box)
+
+	var title := Label.new()
+	title.text = "Choose a Reward"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 30)
+	title.add_theme_color_override("font_color", Color(1.0, 0.92, 0.72))
+	box.add_child(title)
+
+	var subtitle := Label.new()
+	reward_subtitle_label = subtitle
+	subtitle.text = "Choose one Technique. It changes presentation by mode and has no gameplay effect yet."
+	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	subtitle.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	subtitle.add_theme_font_size_override("font_size", 15)
+	subtitle.add_theme_color_override("font_color", Color(0.78, 0.82, 0.88))
+	box.add_child(subtitle)
+
+	reward_preview_label = Label.new()
+	reward_preview_label.text = "Preview:\n- Prototype technique preview."
+	reward_preview_label.custom_minimum_size = Vector2(520.0, 62.0)
+	reward_preview_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	reward_preview_label.add_theme_font_size_override("font_size", 17)
+	reward_preview_label.add_theme_color_override("font_color", Color(0.96, 0.90, 0.68))
+	box.add_child(reward_preview_label)
+
+	for i in range(3):
+		var button := Button.new()
+		button.custom_minimum_size = Vector2(520.0, 58.0)
+		button.add_theme_font_size_override("font_size", 22)
+		button.mouse_entered.connect(_on_reward_choice_hovered.bind(i))
+		button.focus_entered.connect(_on_reward_choice_hovered.bind(i))
+		button.pressed.connect(_on_reward_choice_pressed.bind(i))
+		box.add_child(button)
+		reward_choice_buttons.append(button)
+
+func _open_combat_reward_screen() -> void:
+	if reward_overlay == null:
+		return
+	combat_reward_screen_opened = true
+	current_reward_choices = _generate_reward_choices()
+	if reward_subtitle_label != null:
+		reward_subtitle_label.text = _reward_subtitle_for_current_mode()
+	for i in range(reward_choice_buttons.size()):
+		var button: Button = reward_choice_buttons[i]
+		if i >= current_reward_choices.size():
+			button.visible = false
+			button.disabled = true
+			continue
+		var reward_id: String = current_reward_choices[i]
+		button.visible = true
+		button.disabled = false
+		button.text = "%s\n%s" % [_reward_display_name(reward_id), _reward_mode_description(reward_id)]
+	if not current_reward_choices.is_empty():
+		_update_reward_preview(0)
+	reward_overlay.visible = true
+	if player != null and player.has_method("set_free_movement_enabled"):
+		player.set_free_movement_enabled(false)
+	_record_room_event("REWARD_SCREEN_OPENED", {
+		"room_index": current_room_index,
+		"room_type": selected_room_type,
+		"room_id": selected_room_id,
+		"reward_kind": "technique",
+		"control_mode": _current_control_mode_name(),
+		"choices": current_reward_choices.duplicate(),
+		"display_names": _reward_choice_display_names(current_reward_choices)
+	})
+
+func _generate_reward_choices() -> Array[String]:
+	var rewards: Array[String] = RunStateScript.technique_ids()
+	rewards.shuffle()
+	var choices: Array[String] = []
+	var choice_count: int = mini(3, rewards.size())
+	for i in range(choice_count):
+		choices.append(rewards[i])
+	return choices
+
+func _on_reward_choice_pressed(choice_index: int) -> void:
+	if choice_index < 0 or choice_index >= current_reward_choices.size():
+		return
+	var reward_id: String = current_reward_choices[choice_index]
+	var reward_count: int = RunStateScript.add_technique(get_tree(), reward_id)
+	combat_reward_selected = true
+	if reward_overlay != null:
+		reward_overlay.visible = false
+	if player != null and player.has_method("set_free_movement_enabled"):
+		player.set_free_movement_enabled(true)
+	_record_room_event("REWARD_SELECTED", {
+		"room_index": current_room_index,
+		"room_type": selected_room_type,
+		"room_id": selected_room_id,
+		"reward_kind": "technique",
+		"control_mode": _current_control_mode_name(),
+		"reward_id": reward_id,
+		"display_name": _reward_display_name(reward_id),
+		"mode_description": _reward_mode_description(reward_id),
+		"preview_text": RunStateScript.technique_preview_text(reward_id)
+	})
+	_record_room_event("RUN_TECHNIQUES_UPDATED", {
+		"room_index": current_room_index,
+		"reward_id": reward_id,
+		"count": reward_count,
+		"techniques": RunStateScript.techniques(get_tree())
+	})
+	_emit_arena_log("%s added to run rewards." % _reward_display_name(reward_id))
+	_update_room_gate_reveal()
+
+func _on_reward_choice_hovered(choice_index: int) -> void:
+	_update_reward_preview(choice_index)
+
+func _update_reward_preview(choice_index: int) -> void:
+	if reward_preview_label == null or choice_index < 0 or choice_index >= current_reward_choices.size():
+		return
+	var reward_id: String = current_reward_choices[choice_index]
+	reward_preview_label.text = "Preview:\n- %s" % RunStateScript.technique_preview_text(reward_id)
+
+func _reward_choice_display_names(reward_ids: Array[String]) -> Array[String]:
+	var names: Array[String] = []
+	for reward_id in reward_ids:
+		names.append(_reward_display_name(reward_id))
+	return names
+
+func _reward_display_name(reward_id: String) -> String:
+	return RunStateScript.technique_display_name(reward_id)
+
+func _reward_mode_description(reward_id: String) -> String:
+	return RunStateScript.technique_description(reward_id, _current_control_mode_name())
+
+func _reward_subtitle_for_current_mode() -> String:
+	if _current_control_mode_name() == "POWER_ACTION":
+		return "Choose one Technique. Power mode shows skill-style descriptions; gameplay hooks come later."
+	return "Choose one Technique. Time mode shows card-style descriptions; combat draw hooks come later."
+
+func _current_control_mode_name() -> String:
+	if combat_manager != null and combat_manager.has_method("get_control_mode_name"):
+		return String(combat_manager.get_control_mode_name())
+	return RunStateScript.selected_combat_mode(get_tree(), "TIME_TACTICAL")
+
 func _create_fight_camera() -> void:
 	fight_camera = Camera2D.new()
 	fight_camera.name = "FightCamera"
@@ -717,6 +898,11 @@ func _combat_clear_camera_active() -> bool:
 	return _room_traversal_active()
 
 func _update_room_gate_reveal() -> void:
+	if _combat_reward_screen_should_open():
+		if room_gates_revealed:
+			_hide_room_gates()
+		_open_combat_reward_screen()
+		return
 	if _room_gates_should_be_available():
 		if not room_gates_revealed:
 			_reveal_room_gates()
@@ -724,14 +910,24 @@ func _update_room_gate_reveal() -> void:
 		_hide_room_gates()
 
 func _room_traversal_active() -> bool:
-	if selected_room_type != ROOM_TYPE_COMBAT:
-		return true
-	return combat_manager != null and bool(combat_manager.get("combat_cleared"))
+	if _room_type_has_combat_reward():
+		return combat_manager != null and bool(combat_manager.get("combat_cleared"))
+	return true
 
 func _room_gates_should_be_available() -> bool:
-	if selected_room_type != ROOM_TYPE_COMBAT:
-		return non_combat_interaction_complete and not _merchant_shop_open()
-	return combat_manager != null and bool(combat_manager.get("combat_cleared"))
+	if _room_type_has_combat_reward():
+		return combat_manager != null and bool(combat_manager.get("combat_cleared")) and combat_reward_selected
+	return non_combat_interaction_complete and not _merchant_shop_open()
+
+func _room_type_has_combat_reward() -> bool:
+	return selected_room_type == ROOM_TYPE_COMBAT or selected_room_type == ROOM_TYPE_ELITE or selected_room_type == ROOM_TYPE_BOSS
+
+func _combat_reward_screen_should_open() -> bool:
+	return _room_type_has_combat_reward() \
+		and combat_manager != null \
+		and bool(combat_manager.get("combat_cleared")) \
+		and not combat_reward_screen_opened \
+		and not combat_reward_selected
 
 func _viewport_size() -> Vector2:
 	var size := get_viewport().get_visible_rect().size
@@ -1125,7 +1321,9 @@ func _store_next_room_metadata(next_room_index: int, room_type: String, room_id:
 		"next_entry_side": assigned_next_entry_side,
 		"selected_combat_mode": RunStateScript.selected_combat_mode(get_tree(), "TIME_TACTICAL"),
 		"player_current_hp": RunStateScript.player_current_hp(get_tree(), int(player.max_hp) if player != null and "max_hp" in player else 100),
-		"memory_threads": RunStateScript.memory_threads(get_tree())
+		"memory_threads": RunStateScript.memory_threads(get_tree()),
+		"techniques": RunStateScript.techniques(get_tree()),
+		"unlocked_skills": RunStateScript.unlocked_skills(get_tree())
 	})
 
 func _reload_current_scene_after_gate() -> void:

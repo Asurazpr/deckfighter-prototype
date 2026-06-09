@@ -21,6 +21,7 @@ const DETAIL_FONT_SIZE := 13
 const HEADER_FONT_SIZE := 15
 const PRIMARY_FONT_SIZE := 16
 const CARD_FONT_SIZE := 17
+const RunStateScript := preload("res://scripts/run/run_state.gd")
 const CombatDebugExporterScript := preload("res://scripts/combat/combat_debug_exporter.gd")
 const PREDICTION_COLORS := {
 	"interrupt": Color(0.55, 1.0, 0.62),
@@ -65,7 +66,11 @@ var pause_overlay: ColorRect
 var pause_panel: PanelContainer
 var pause_title_label: Label
 var resume_button: Button
+var deck_skills_button: Button
 var restart_button: Button
+var run_progress_overlay: ColorRect
+var run_progress_body_label: Label
+var run_progress_close_button: Button
 var pause_overlay_mode := ""
 var debug_panels_visible := false
 var enemy_ai_visible := true
@@ -80,6 +85,7 @@ func _ready() -> void:
 	_configure_static_layout()
 	_build_debug_panels()
 	_build_pause_menu()
+	_build_run_progress_overlay()
 	_apply_debug_visibility()
 
 func _process(_delta: float) -> void:
@@ -100,8 +106,11 @@ func _process(_delta: float) -> void:
 		control_mode_button.visible = _should_show_pre_fight_controls()
 		_refresh_control_mode_button()
 	_refresh_memory_threads_label()
+	_refresh_mode_specific_ui()
 	_refresh_impact_bar()
 	_refresh_queue_label()
+	if run_progress_overlay != null and run_progress_overlay.visible:
+		_refresh_run_progress_overlay()
 
 func bind(player: Node, enemy: Node, deck_manager: Node, manager: Node) -> void:
 	combat_manager = manager
@@ -192,7 +201,9 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		return
 
 	if key_event.keycode == KEY_ESCAPE:
-		if _pause_menu_open():
+		if _run_progress_open():
+			_close_run_progress_overlay()
+		elif _pause_menu_open():
 			if pause_overlay_mode != "game_over":
 				_resume_from_pause()
 		else:
@@ -405,7 +416,7 @@ func _build_pause_menu() -> void:
 	pause_overlay.add_child(center)
 
 	pause_panel = PanelContainer.new()
-	pause_panel.custom_minimum_size = Vector2(340, 230)
+	pause_panel.custom_minimum_size = Vector2(340, 292)
 	pause_panel.process_mode = Node.PROCESS_MODE_ALWAYS
 	pause_panel.add_theme_stylebox_override("panel", _panel_style(Color(0.045, 0.05, 0.06, 0.98), Color(0.58, 0.72, 0.92, 0.82)))
 	center.add_child(pause_panel)
@@ -438,6 +449,16 @@ func _build_pause_menu() -> void:
 	resume_button.pressed.connect(_resume_from_pause)
 	box.add_child(resume_button)
 
+	deck_skills_button = Button.new()
+	deck_skills_button.text = "Deck / Skills"
+	deck_skills_button.custom_minimum_size = Vector2(260, 44)
+	deck_skills_button.process_mode = Node.PROCESS_MODE_ALWAYS
+	deck_skills_button.add_theme_font_size_override("font_size", 18)
+	deck_skills_button.add_theme_stylebox_override("normal", _button_style(Color(0.10, 0.13, 0.19, 0.96), Color(0.68, 0.76, 1.0, 0.86)))
+	deck_skills_button.add_theme_stylebox_override("hover", _button_style(Color(0.14, 0.17, 0.25, 0.98), Color(0.80, 0.86, 1.0, 0.95)))
+	deck_skills_button.pressed.connect(_open_run_progress_overlay)
+	box.add_child(deck_skills_button)
+
 	restart_button = Button.new()
 	restart_button.text = "Restart"
 	restart_button.custom_minimum_size = Vector2(260, 44)
@@ -447,6 +468,155 @@ func _build_pause_menu() -> void:
 	restart_button.add_theme_stylebox_override("hover", _button_style(Color(0.27, 0.14, 0.10, 0.98), Color(1.0, 0.72, 0.46, 0.95)))
 	restart_button.pressed.connect(_restart_current_debug_scene)
 	box.add_child(restart_button)
+
+func _build_run_progress_overlay() -> void:
+	run_progress_overlay = ColorRect.new()
+	run_progress_overlay.name = "RunProgressOverlay"
+	run_progress_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	run_progress_overlay.color = Color(0.0, 0.0, 0.0, 0.42)
+	run_progress_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	run_progress_overlay.visible = false
+	run_progress_overlay.process_mode = Node.PROCESS_MODE_ALWAYS
+	root.add_child(run_progress_overlay)
+
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	center.process_mode = Node.PROCESS_MODE_ALWAYS
+	run_progress_overlay.add_child(center)
+
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size = Vector2(560, 520)
+	panel.process_mode = Node.PROCESS_MODE_ALWAYS
+	panel.add_theme_stylebox_override("panel", _panel_style(Color(0.035, 0.042, 0.056, 0.99), Color(0.54, 0.70, 1.0, 0.86)))
+	center.add_child(panel)
+
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 28)
+	margin.add_theme_constant_override("margin_top", 24)
+	margin.add_theme_constant_override("margin_right", 28)
+	margin.add_theme_constant_override("margin_bottom", 24)
+	panel.add_child(margin)
+
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 14)
+	margin.add_child(box)
+
+	var title := Label.new()
+	title.text = "Run Progress"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 30)
+	title.add_theme_color_override("font_color", Color(0.9, 0.96, 1.0))
+	box.add_child(title)
+
+	run_progress_body_label = Label.new()
+	run_progress_body_label.custom_minimum_size = Vector2(500, 340)
+	run_progress_body_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	run_progress_body_label.add_theme_font_size_override("font_size", 18)
+	run_progress_body_label.add_theme_color_override("font_color", Color(0.88, 0.92, 0.96))
+	box.add_child(run_progress_body_label)
+
+	run_progress_close_button = Button.new()
+	run_progress_close_button.text = "Close"
+	run_progress_close_button.custom_minimum_size = Vector2(500, 44)
+	run_progress_close_button.process_mode = Node.PROCESS_MODE_ALWAYS
+	run_progress_close_button.add_theme_font_size_override("font_size", 18)
+	run_progress_close_button.add_theme_stylebox_override("normal", _button_style(Color(0.10, 0.16, 0.22, 0.96), Color(0.46, 0.72, 1.0, 0.86)))
+	run_progress_close_button.add_theme_stylebox_override("hover", _button_style(Color(0.13, 0.21, 0.30, 0.98), Color(0.62, 0.84, 1.0, 0.95)))
+	run_progress_close_button.pressed.connect(_close_run_progress_overlay)
+	box.add_child(run_progress_close_button)
+
+func _run_progress_open() -> bool:
+	return run_progress_overlay != null and run_progress_overlay.visible
+
+func _open_run_progress_overlay() -> void:
+	if run_progress_overlay == null:
+		return
+	_refresh_run_progress_overlay()
+	run_progress_overlay.visible = true
+	if run_progress_close_button != null:
+		run_progress_close_button.grab_focus()
+
+func _close_run_progress_overlay() -> void:
+	if run_progress_overlay != null:
+		run_progress_overlay.visible = false
+
+func _refresh_run_progress_overlay() -> void:
+	if run_progress_body_label == null:
+		return
+	var mode_name: String = _current_control_mode_name()
+	var lines: Array[String] = [
+		"Mode: %s" % mode_name,
+		"Threads: %d" % RunStateScript.memory_threads(get_tree()),
+		""
+	]
+	if mode_name == "POWER_ACTION":
+		lines.append_array(_run_progress_power_lines())
+	else:
+		lines.append_array(_run_progress_tactical_lines())
+	run_progress_body_label.text = "\n".join(lines)
+
+func _run_progress_tactical_lines() -> Array[String]:
+	var lines: Array[String] = [
+		"Techniques:"
+	]
+	var techniques: Array[String] = RunStateScript.techniques(get_tree())
+	if techniques.is_empty():
+		lines.append("- None yet")
+	else:
+		for technique_id in techniques:
+			lines.append("- %s: %s" % [
+				RunStateScript.technique_display_name(technique_id),
+				RunStateScript.technique_description(technique_id, "TIME_TACTICAL")
+			])
+	lines.append("")
+	lines.append("Starting Tactical Cards:")
+	lines.append("- Current Renka melee starter deck")
+	return lines
+
+func _run_progress_power_lines() -> Array[String]:
+	var lines: Array[String] = [
+		"Techniques:"
+	]
+	var techniques: Array[String] = RunStateScript.techniques(get_tree())
+	if techniques.is_empty():
+		lines.append("- None yet")
+	else:
+		for technique_id in techniques:
+			lines.append("- %s: %s" % [
+				RunStateScript.technique_display_name(technique_id),
+				RunStateScript.technique_description(technique_id, "POWER_ACTION")
+			])
+	lines.append("")
+	lines.append_array([
+		"Unlocked Movement Skills:"
+	])
+	var skills: Array[String] = RunStateScript.unlocked_skills(get_tree())
+	if skills.is_empty():
+		lines.append("- None yet")
+	else:
+		for skill_id in skills:
+			lines.append("- %s" % _skill_display_name(skill_id))
+	lines.append("")
+	lines.append("Controls:")
+	lines.append("- J/K/U/I attacks")
+	lines.append("- L block")
+	lines.append("- S crouch")
+	lines.append("- A/D move")
+	lines.append("- W jump")
+	return lines
+
+func _skill_display_name(skill_id: String) -> String:
+	match skill_id:
+		"dash":
+			return "Dash"
+		"air_dash":
+			return "Air Dash"
+		"quick_rise":
+			return "Quick Rise"
+		"back_roll":
+			return "Back Roll"
+		_:
+			return skill_id.capitalize()
 
 func _pause_menu_open() -> bool:
 	return pause_overlay != null and pause_overlay.visible
@@ -468,6 +638,7 @@ func _resume_from_pause() -> void:
 	if pause_overlay_mode == "game_over":
 		return
 	pause_overlay_mode = ""
+	_close_run_progress_overlay()
 	if pause_overlay != null:
 		pause_overlay.visible = false
 	get_tree().paused = false
@@ -488,6 +659,7 @@ func _show_game_over_overlay() -> void:
 func _restart_current_debug_scene() -> void:
 	var restart_source: String = pause_overlay_mode if pause_overlay_mode != "" else "restart"
 	pause_overlay_mode = ""
+	_close_run_progress_overlay()
 	if pause_overlay != null:
 		pause_overlay.visible = false
 	get_tree().paused = false
@@ -712,7 +884,7 @@ func _apply_debug_visibility() -> void:
 	if timing_panel != null:
 		timing_panel.visible = debug_panels_visible and timing_visible
 	if queue_label != null:
-		queue_label.visible = true
+		queue_label.visible = _is_time_tactical_mode()
 	if combat_log_panel != null:
 		combat_log_panel.visible = debug_panels_visible and combat_log_visible
 	if impact_panel != null:
@@ -764,15 +936,31 @@ func _toggle_control_mode() -> void:
 	if combat_manager != null and combat_manager.has_method("toggle_control_mode"):
 		combat_manager.toggle_control_mode()
 	_refresh_control_mode_button()
+	_refresh_mode_specific_ui()
 	_refresh_card_enabled_state()
 
 func _refresh_control_mode_button() -> void:
 	if control_mode_button == null:
 		return
-	var mode_name := "TIME_TACTICAL"
+	control_mode_button.text = "Mode: %s" % _current_control_mode_name()
+
+func _current_control_mode_name() -> String:
 	if combat_manager != null and combat_manager.has_method("get_control_mode_name"):
-		mode_name = String(combat_manager.get_control_mode_name())
-	control_mode_button.text = "Mode: %s" % mode_name
+		return String(combat_manager.get_control_mode_name())
+	return "TIME_TACTICAL"
+
+func _is_time_tactical_mode() -> bool:
+	return _current_control_mode_name() == "TIME_TACTICAL"
+
+func _refresh_mode_specific_ui() -> void:
+	var tactical_visible: bool = _is_time_tactical_mode()
+	if hand_panel != null:
+		# TODO: POWER_ACTION can reclaim this bottom HUD space in a dedicated camera/framing pass.
+		hand_panel.visible = tactical_visible
+	if queue_label != null:
+		queue_label.visible = tactical_visible
+	if tactical_visible:
+		_refresh_card_enabled_state()
 
 func _try_play_card_from_number(index: int) -> void:
 	if index >= card_buttons.size():
@@ -781,6 +969,8 @@ func _try_play_card_from_number(index: int) -> void:
 		_on_log_message("Card not playable.")
 
 func _try_play_card(index: int) -> bool:
+	if not _is_time_tactical_mode():
+		return false
 	if combat_manager != null and combat_manager.has_method("log_card_playability_debug"):
 		combat_manager.log_card_playability_debug(index, "ui_card_click")
 	if combat_manager == null or not combat_manager.is_hand_card_playable(index):
@@ -803,7 +993,7 @@ func _refresh_card_enabled_state() -> void:
 	if combat_manager == null:
 		return
 	for i in range(card_buttons.size()):
-		card_buttons[i].disabled = not combat_manager.is_hand_card_playable(i)
+		card_buttons[i].disabled = not _is_time_tactical_mode() or not combat_manager.is_hand_card_playable(i)
 		card_buttons[i].modulate = _prediction_color_for_card(i)
 		_apply_card_button_style(card_buttons[i], i)
 
@@ -904,6 +1094,10 @@ func _export_combat_log() -> void:
 func _refresh_queue_label() -> void:
 	if queue_label == null:
 		return
+	if not _is_time_tactical_mode():
+		queue_label.visible = false
+		return
+	queue_label.visible = true
 	var has_actions := not queue_label.text.to_lower().contains("empty")
 	queue_label.add_theme_color_override(
 		"font_color",
