@@ -416,6 +416,23 @@ func enter_defeated_state() -> void:
 	hide()
 	defeated.emit()
 
+func enter_non_combat_hidden_state() -> void:
+	current_attack = ""
+	current_animation_action = "None"
+	current_animation_phase = "DONE"
+	current_animation_progress = 0.0
+	current_animation_hit_level = ""
+	current_animation_hitbox_active = false
+	stance_break_stun_frames_remaining = 0
+	stance_protection_frames_remaining = 0
+	stance_recovery_frames_remaining = 0
+	_set_telegraph_text("", "", Color.TRANSPARENT, Color.TRANSPARENT)
+	_set_body_collision_enabled(false)
+	_set_attack_collision_enabled(false)
+	set_process(false)
+	set_physics_process(false)
+	hide()
+
 func _set_telegraph_text(debug_text: String, readability_text: String = "", debug_color: Color = Color.WHITE, readability_color: Color = Color.WHITE) -> void:
 	_telegraph_debug_text = debug_text
 	_telegraph_readability_text = readability_text if readability_text != "" else debug_text

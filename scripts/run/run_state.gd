@@ -9,10 +9,14 @@ const META_SELECTED_COMBAT_MODE := "deckfighter_selected_combat_mode"
 const META_PLAYER_CURRENT_HP := "deckfighter_player_current_hp"
 const META_PREVIOUS_EXIT_DIRECTION := "deckfighter_previous_exit_direction"
 const META_NEXT_ENTRY_SIDE := "deckfighter_next_entry_side"
+const META_UNLOCKED_SKILLS := "deckfighter_unlocked_skills"
+const META_MEMORY_THREADS := "deckfighter_memory_threads"
 
 const ROOM_TYPE_COMBAT := "combat"
+const ROOM_TYPE_ELITE := "elite"
 const ROOM_TYPE_REST := "rest"
 const ROOM_TYPE_MERCHANT := "merchant"
+const ROOM_TYPE_BOSS := "boss"
 
 const SIDE_LEFT := "LEFT"
 const SIDE_RIGHT := "RIGHT"
@@ -97,6 +101,50 @@ static func set_player_current_hp(tree: SceneTree, hp: int) -> void:
 		return
 	tree.set_meta(META_PLAYER_CURRENT_HP, hp)
 
+static func memory_threads(tree: SceneTree) -> int:
+	if tree == null:
+		return 0
+	return int(tree.get_meta(META_MEMORY_THREADS, 0))
+
+static func set_memory_threads(tree: SceneTree, amount: int) -> void:
+	if tree == null:
+		return
+	tree.set_meta(META_MEMORY_THREADS, maxi(0, amount))
+
+static func add_memory_threads(tree: SceneTree, amount: int) -> int:
+	var total: int = memory_threads(tree) + maxi(0, amount)
+	set_memory_threads(tree, total)
+	return total
+
+static func spend_memory_threads(tree: SceneTree, amount: int) -> bool:
+	var cost: int = maxi(0, amount)
+	var current: int = memory_threads(tree)
+	if current < cost:
+		return false
+	set_memory_threads(tree, current - cost)
+	return true
+
+static func unlocked_skills(tree: SceneTree) -> Array[String]:
+	if tree == null:
+		return []
+	var raw_skills: Variant = tree.get_meta(META_UNLOCKED_SKILLS, [])
+	var result: Array[String] = []
+	if raw_skills is Array:
+		for skill in raw_skills:
+			result.append(String(skill))
+	return result
+
+static func has_unlocked_skill(tree: SceneTree, skill_id: String) -> bool:
+	return unlocked_skills(tree).has(skill_id)
+
+static func unlock_skill(tree: SceneTree, skill_id: String) -> void:
+	if tree == null or skill_id == "":
+		return
+	var skills: Array[String] = unlocked_skills(tree)
+	if not skills.has(skill_id):
+		skills.append(skill_id)
+	tree.set_meta(META_UNLOCKED_SKILLS, skills)
+
 static func reset(tree: SceneTree) -> void:
 	if tree == null:
 		return
@@ -108,7 +156,9 @@ static func reset(tree: SceneTree) -> void:
 		META_SELECTED_COMBAT_MODE,
 		META_PLAYER_CURRENT_HP,
 		META_PREVIOUS_EXIT_DIRECTION,
-		META_NEXT_ENTRY_SIDE
+		META_NEXT_ENTRY_SIDE,
+		META_UNLOCKED_SKILLS,
+		META_MEMORY_THREADS
 	]
 	for key: String in metadata_keys:
 		if tree.has_meta(key):

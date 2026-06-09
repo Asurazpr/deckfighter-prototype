@@ -25,6 +25,7 @@ const RunStateScript := preload("res://scripts/run/run_state.gd")
 @export var camera_debug_log_interval := 0.35
 @export var min_room_gate_choices := 2
 @export var max_room_gate_choices := 3
+@export var rest_heal_ratio := 0.20
 
 @onready var player = $Player
 @onready var enemy = $Enemy
@@ -44,6 +45,21 @@ var room_gate_path_layer: Node2D
 var room_gate_choices: Array[Dictionary] = []
 var room_gates_revealed := false
 var room_gate_selection_locked := false
+var room_transition_in_progress := false
+var non_combat_room_active := false
+var non_combat_interaction_available := false
+var non_combat_interaction_complete := false
+var rest_interaction_used := false
+var merchant_interaction_opened := false
+var non_combat_interaction_layer: Node2D
+var non_combat_interact_area: Area2D
+var non_combat_prompt_label: Label
+var non_combat_feedback_label: Label
+var shop_canvas: CanvasLayer
+var shop_overlay: Control
+var shop_threads_label: Label
+var shop_feedback_label: Label
+var shop_skill_buttons: Dictionary = {}
 var current_room_index := 0
 var selected_room_type := "combat"
 var selected_room_id := "debug_start"
@@ -52,12 +68,21 @@ var next_entry_side := "LEFT"
 var player_starts_left := true
 
 const ROOM_TYPE_COMBAT := "combat"
+const ROOM_TYPE_ELITE := RunStateScript.ROOM_TYPE_ELITE
 const ROOM_TYPE_REST := "rest"
 const ROOM_TYPE_MERCHANT := "merchant"
+const ROOM_TYPE_BOSS := RunStateScript.ROOM_TYPE_BOSS
+const FORCED_MERCHANT_ROOM_INDEX := 5
 const EXIT_LEFT := "LEFT"
 const EXIT_RIGHT := "RIGHT"
 const EXIT_UP := "UP"
 const EXIT_DOWN := "DOWN"
+const MERCHANT_SKILLS: Array[Dictionary] = [
+	{"id": "dash", "label": "Dash", "cost": 20},
+	{"id": "air_dash", "label": "Air Dash", "cost": 20},
+	{"id": "quick_rise", "label": "Quick Rise", "cost": 30},
+	{"id": "back_roll", "label": "Back Roll", "cost": 30}
+]
 
 func _ready() -> void:
 	_load_run_room_metadata()
@@ -74,10 +99,35 @@ func _ready() -> void:
 	_apply_persisted_player_hp()
 	_apply_hud_side()
 	_record_encounter_side_assigned()
+	_setup_selected_room_behavior()
 
 func _process(delta: float) -> void:
 	_update_fight_camera(delta)
 	_update_room_gate_reveal()
+	_clamp_player_to_arena_bounds()
+
+func _input(event: InputEvent) -> void:
+	var key_event := event as InputEventKey
+	if key_event == null or not key_event.pressed or key_event.echo:
+		return
+	if key_event.keycode == KEY_ESCAPE and _merchant_shop_open():
+		_close_merchant_shop()
+		get_viewport().set_input_as_handled()
+
+func _unhandled_key_input(event: InputEvent) -> void:
+	var key_event := event as InputEventKey
+	if key_event == null or not key_event.pressed or key_event.echo:
+		return
+	if key_event.keycode == KEY_F and non_combat_room_active:
+		_try_interact_non_combat_room()
+		get_viewport().set_input_as_handled()
+
+func _clamp_player_to_arena_bounds() -> void:
+	if player == null or not _room_traversal_active():
+		return
+	var min_x: float = arena_left_x + fighter_wall_margin
+	var max_x: float = arena_right_x - fighter_wall_margin
+	player.global_position.x = clampf(player.global_position.x, min_x, max_x)
 
 func _apply_round_start_positions() -> void:
 	var spawn_gap := desired_start_distance * 0.5
@@ -145,6 +195,411 @@ func _create_room_gate_layer() -> void:
 	room_gate_path_layer.name = "PathPreview"
 	room_gate_path_layer.z_index = 11
 	room_gate_layer.add_child(room_gate_path_layer)
+
+func _setup_selected_room_behavior() -> void:
+	if selected_room_type == ROOM_TYPE_COMBAT:
+		non_combat_room_active = false
+		return
+	_setup_non_combat_room()
+
+func _setup_non_combat_room() -> void:
+	non_combat_room_active = true
+	non_combat_interaction_complete = false
+	non_combat_interaction_available = false
+	rest_interaction_used = false
+	merchant_interaction_opened = false
+	_hide_room_gates()
+	if combat_manager != null and combat_manager.has_method("enter_non_combat_room"):
+		combat_manager.enter_non_combat_room(selected_room_type, selected_room_id)
+	_hide_enemy_for_non_combat_room()
+	if player != null:
+		if player.has_method("set_input_enabled"):
+			player.set_input_enabled(true)
+		if player.has_method("set_free_movement_enabled"):
+			player.set_free_movement_enabled(true)
+	_create_non_combat_interaction_layer()
+	_create_non_combat_interact_point()
+	if selected_room_type == ROOM_TYPE_MERCHANT:
+		_create_merchant_shop_overlay()
+	_record_room_event("NON_COMBAT_ROOM_READY", {
+		"room_index": current_room_index,
+		"room_type": selected_room_type,
+		"room_id": selected_room_id
+	})
+
+func _hide_enemy_for_non_combat_room() -> void:
+	if enemy == null:
+		return
+	if enemy.has_method("enter_non_combat_hidden_state"):
+		enemy.enter_non_combat_hidden_state()
+	else:
+		enemy.hide()
+		enemy.set_process(false)
+		enemy.set_physics_process(false)
+
+func _create_non_combat_interaction_layer() -> void:
+	non_combat_interaction_layer = Node2D.new()
+	non_combat_interaction_layer.name = "NonCombatInteractionLayer"
+	non_combat_interaction_layer.z_index = 18
+	add_child(non_combat_interaction_layer)
+
+	non_combat_feedback_label = Label.new()
+	non_combat_feedback_label.name = "RoomFeedback"
+	non_combat_feedback_label.position = Vector2(stage_center_x - 240.0, 260.0)
+	non_combat_feedback_label.size = Vector2(480.0, 38.0)
+	non_combat_feedback_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	non_combat_feedback_label.add_theme_font_size_override("font_size", 22)
+	non_combat_feedback_label.add_theme_color_override("font_color", Color(0.94, 0.98, 1.0))
+	non_combat_feedback_label.text = ""
+	non_combat_interaction_layer.add_child(non_combat_feedback_label)
+
+func _create_non_combat_interact_point() -> void:
+	if non_combat_interaction_layer == null:
+		return
+	var interact_position := Vector2(stage_center_x, player_round_start_y - 84.0)
+	non_combat_interact_area = Area2D.new()
+	non_combat_interact_area.name = "RestInteractPoint" if selected_room_type == ROOM_TYPE_REST else "MerchantInteractPoint"
+	non_combat_interact_area.global_position = interact_position
+	non_combat_interact_area.monitoring = true
+	non_combat_interact_area.monitorable = false
+	non_combat_interact_area.z_index = 18
+	non_combat_interaction_layer.add_child(non_combat_interact_area)
+
+	var shape := CollisionShape2D.new()
+	var rect_shape := RectangleShape2D.new()
+	rect_shape.size = Vector2(150.0, 140.0)
+	shape.shape = rect_shape
+	non_combat_interact_area.add_child(shape)
+
+	var visual := Polygon2D.new()
+	visual.polygon = PackedVector2Array([
+		Vector2(-64.0, -58.0),
+		Vector2(64.0, -58.0),
+		Vector2(64.0, 58.0),
+		Vector2(-64.0, 58.0)
+	])
+	visual.color = _room_type_color(selected_room_type)
+	visual.z_index = 18
+	non_combat_interact_area.add_child(visual)
+
+	var title := Label.new()
+	title.position = Vector2(-88.0, -22.0)
+	title.size = Vector2(176.0, 44.0)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 24)
+	title.add_theme_color_override("font_color", Color.WHITE)
+	title.text = "REST" if selected_room_type == ROOM_TYPE_REST else "SHOP"
+	title.z_index = 19
+	non_combat_interact_area.add_child(title)
+
+	non_combat_prompt_label = Label.new()
+	non_combat_prompt_label.position = Vector2(-130.0, 70.0)
+	non_combat_prompt_label.size = Vector2(260.0, 34.0)
+	non_combat_prompt_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	non_combat_prompt_label.add_theme_font_size_override("font_size", 18)
+	non_combat_prompt_label.add_theme_color_override("font_color", Color(0.92, 0.96, 1.0))
+	non_combat_prompt_label.text = "Press F to rest" if selected_room_type == ROOM_TYPE_REST else "Press F to shop"
+	non_combat_prompt_label.visible = false
+	non_combat_prompt_label.z_index = 19
+	non_combat_interact_area.add_child(non_combat_prompt_label)
+
+	non_combat_interact_area.body_entered.connect(_on_non_combat_interact_body_entered)
+	non_combat_interact_area.body_exited.connect(_on_non_combat_interact_body_exited)
+	_record_room_event("ROOM_MARKER_CREATED", {
+		"room_index": current_room_index,
+		"room_type": selected_room_type,
+		"room_id": selected_room_id,
+		"marker_kind": "interact",
+		"label": _room_type_label(selected_room_type, selected_room_id),
+		"color": _color_to_dict(_room_type_color(selected_room_type)),
+		"position": _vector_to_dict(interact_position)
+	})
+
+func _create_merchant_shop_overlay() -> void:
+	shop_canvas = CanvasLayer.new()
+	shop_canvas.name = "MerchantShopCanvas"
+	add_child(shop_canvas)
+
+	var overlay := ColorRect.new()
+	overlay.name = "MerchantShopOverlay"
+	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.color = Color(0.0, 0.0, 0.0, 0.56)
+	overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	overlay.visible = false
+	shop_canvas.add_child(overlay)
+	shop_overlay = overlay
+
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(center)
+
+	var panel := PanelContainer.new()
+	panel.name = "MerchantShopPanel"
+	panel.custom_minimum_size = Vector2(500.0, 400.0)
+	panel.add_theme_stylebox_override("panel", _room_panel_style(Color(0.035, 0.048, 0.07, 0.96), Color(0.36, 0.62, 1.0, 0.82)))
+	center.add_child(panel)
+
+	shop_overlay = overlay
+	var shop_panel := panel
+	shop_panel.name = "MerchantShopPanel"
+	shop_panel.custom_minimum_size = Vector2(500.0, 400.0)
+	shop_panel.add_theme_stylebox_override("panel", _room_panel_style(Color(0.035, 0.048, 0.07, 0.96), Color(0.36, 0.62, 1.0, 0.82)))
+
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 28)
+	margin.add_theme_constant_override("margin_top", 24)
+	margin.add_theme_constant_override("margin_right", 28)
+	margin.add_theme_constant_override("margin_bottom", 24)
+	shop_panel.add_child(margin)
+
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 12)
+	margin.add_child(box)
+
+	var title := Label.new()
+	title.text = "Merchant"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 28)
+	title.add_theme_color_override("font_color", Color(0.88, 0.94, 1.0))
+	box.add_child(title)
+
+	var subtitle := Label.new()
+	subtitle.text = "Prototype movement skills"
+	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	subtitle.add_theme_font_size_override("font_size", 15)
+	subtitle.add_theme_color_override("font_color", Color(0.66, 0.76, 0.86))
+	box.add_child(subtitle)
+
+	shop_threads_label = Label.new()
+	shop_threads_label.text = "Threads: 0"
+	shop_threads_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	shop_threads_label.add_theme_font_size_override("font_size", 18)
+	shop_threads_label.add_theme_color_override("font_color", Color(0.96, 0.88, 0.56))
+	box.add_child(shop_threads_label)
+
+	shop_feedback_label = Label.new()
+	shop_feedback_label.text = ""
+	shop_feedback_label.custom_minimum_size = Vector2(420.0, 28.0)
+	shop_feedback_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	shop_feedback_label.add_theme_font_size_override("font_size", 16)
+	shop_feedback_label.add_theme_color_override("font_color", Color(1.0, 0.78, 0.42))
+	box.add_child(shop_feedback_label)
+
+	for skill in MERCHANT_SKILLS:
+		var skill_id: String = String(skill.get("id", ""))
+		var skill_label: String = String(skill.get("label", skill_id))
+		var button := Button.new()
+		button.custom_minimum_size = Vector2(420.0, 42.0)
+		button.text = skill_label
+		button.add_theme_font_size_override("font_size", 18)
+		button.pressed.connect(_on_shop_skill_pressed.bind(skill_id))
+		box.add_child(button)
+		shop_skill_buttons[skill_id] = button
+
+	var close_button := Button.new()
+	close_button.text = "Close"
+	close_button.custom_minimum_size = Vector2(420.0, 42.0)
+	close_button.add_theme_font_size_override("font_size", 18)
+	close_button.pressed.connect(_close_merchant_shop)
+	box.add_child(close_button)
+
+func _room_panel_style(fill: Color, border: Color) -> StyleBoxFlat:
+	var style := StyleBoxFlat.new()
+	style.bg_color = fill
+	style.border_color = border
+	style.set_border_width_all(2)
+	style.set_corner_radius_all(8)
+	return style
+
+func _on_non_combat_interact_body_entered(body: Node) -> void:
+	if body != player:
+		return
+	non_combat_interaction_available = true
+	if non_combat_prompt_label != null:
+		non_combat_prompt_label.visible = true
+
+func _on_non_combat_interact_body_exited(body: Node) -> void:
+	if body != player:
+		return
+	non_combat_interaction_available = false
+	if non_combat_prompt_label != null:
+		non_combat_prompt_label.visible = false
+
+func _try_interact_non_combat_room() -> void:
+	if not non_combat_room_active or not non_combat_interaction_available:
+		return
+	if _merchant_shop_open():
+		return
+	if selected_room_type == ROOM_TYPE_REST:
+		_use_rest_interaction()
+	elif selected_room_type == ROOM_TYPE_MERCHANT:
+		_open_merchant_shop()
+
+func _use_rest_interaction() -> void:
+	if rest_interaction_used:
+		_set_non_combat_feedback("Already rested. Choose a gate.")
+		return
+	rest_interaction_used = true
+	var max_hp: int = int(player.max_hp) if player != null and "max_hp" in player else 100
+	var hp_before: int = int(player.hp) if player != null and "hp" in player else max_hp
+	var heal_amount: int = maxi(1, int(ceil(float(max_hp) * rest_heal_ratio)))
+	var hp_after: int = clampi(hp_before + heal_amount, 0, max_hp)
+	if player != null and "hp" in player:
+		player.hp = hp_after
+		if player.has_signal("hp_changed"):
+			player.hp_changed.emit(hp_after, max_hp)
+	RunStateScript.set_player_current_hp(get_tree(), hp_after)
+	_set_non_combat_feedback("Restored %d HP. Choose your next room." % (hp_after - hp_before))
+	_mark_non_combat_interaction_complete("rest_used")
+	_record_room_event("REST_INTERACTION_USED", {
+		"room_index": current_room_index,
+		"room_type": selected_room_type,
+		"room_id": selected_room_id,
+		"hp_before": hp_before,
+		"hp_after": hp_after,
+		"heal_amount": hp_after - hp_before,
+		"player_max_hp": max_hp
+	})
+	_record_room_event("RUN_STATE_UPDATED", {
+		"room_index": current_room_index,
+		"selected_room_type": selected_room_type,
+		"selected_room_id": selected_room_id,
+		"player_current_hp": hp_after
+	})
+
+func _open_merchant_shop() -> void:
+	if shop_overlay == null:
+		return
+	if _merchant_shop_open():
+		return
+	merchant_interaction_opened = true
+	_refresh_shop_skill_buttons()
+	_set_shop_feedback("")
+	shop_overlay.visible = true
+	if player != null and player.has_method("set_free_movement_enabled"):
+		player.set_free_movement_enabled(false)
+	_set_non_combat_feedback("Merchant opened. Placeholder skills have no gameplay effect yet.")
+	_record_room_event("MERCHANT_SHOP_OPENED", {
+		"room_index": current_room_index,
+		"room_type": selected_room_type,
+		"room_id": selected_room_id,
+		"unlocked_skills": RunStateScript.unlocked_skills(get_tree())
+	})
+
+func _close_merchant_shop() -> void:
+	if not _merchant_shop_open():
+		return
+	if shop_overlay != null:
+		shop_overlay.visible = false
+	if player != null and player.has_method("set_free_movement_enabled"):
+		player.set_free_movement_enabled(true)
+	_set_shop_feedback("")
+	_set_non_combat_feedback("Choose a gate when ready.")
+	_mark_non_combat_interaction_complete("merchant_shop_closed")
+	_record_room_event("MERCHANT_SHOP_CLOSED", {
+		"room_index": current_room_index,
+		"room_type": selected_room_type,
+		"room_id": selected_room_id,
+		"unlocked_skills": RunStateScript.unlocked_skills(get_tree())
+	})
+
+func _merchant_shop_open() -> bool:
+	return shop_overlay != null and shop_overlay.visible
+
+func _on_shop_skill_pressed(skill_id: String) -> void:
+	if skill_id == "":
+		return
+	var already_unlocked: bool = RunStateScript.has_unlocked_skill(get_tree(), skill_id)
+	var cost: int = _skill_cost(skill_id)
+	var current_threads: int = RunStateScript.memory_threads(get_tree())
+	if not already_unlocked and current_threads < cost:
+		_set_shop_feedback("Not enough Threads for %s." % _skill_label(skill_id))
+		_record_room_event("MERCHANT_PURCHASE_FAILED_INSUFFICIENT_THREADS", {
+			"room_index": current_room_index,
+			"room_type": selected_room_type,
+			"room_id": selected_room_id,
+			"skill_id": skill_id,
+			"skill_label": _skill_label(skill_id),
+			"cost": cost,
+			"memory_threads": current_threads
+		})
+		return
+	if not already_unlocked:
+		RunStateScript.spend_memory_threads(get_tree(), cost)
+	RunStateScript.unlock_skill(get_tree(), skill_id)
+	_refresh_shop_skill_buttons()
+	_set_shop_feedback("%s unlocked." % _skill_label(skill_id))
+	_record_room_event("MERCHANT_PURCHASE_SUCCESS", {
+		"room_index": current_room_index,
+		"room_type": selected_room_type,
+		"room_id": selected_room_id,
+		"skill_id": skill_id,
+		"skill_label": _skill_label(skill_id),
+		"already_unlocked": already_unlocked,
+		"cost": cost,
+		"memory_threads": RunStateScript.memory_threads(get_tree()),
+		"unlocked_skills": RunStateScript.unlocked_skills(get_tree())
+	})
+	_record_room_event("MERCHANT_SKILL_PURCHASED", {
+		"room_index": current_room_index,
+		"skill_id": skill_id,
+		"skill_label": _skill_label(skill_id),
+		"cost": cost
+	})
+	_record_room_event("RUN_STATE_UPDATED", {
+		"room_index": current_room_index,
+		"selected_room_type": selected_room_type,
+		"selected_room_id": selected_room_id,
+		"memory_threads": RunStateScript.memory_threads(get_tree()),
+		"unlocked_skills": RunStateScript.unlocked_skills(get_tree())
+	})
+
+func _refresh_shop_skill_buttons() -> void:
+	if shop_threads_label != null:
+		shop_threads_label.text = "Threads: %d" % RunStateScript.memory_threads(get_tree())
+	for skill in MERCHANT_SKILLS:
+		var skill_id: String = String(skill.get("id", ""))
+		var button := shop_skill_buttons.get(skill_id, null) as Button
+		if button == null:
+			continue
+		var unlocked: bool = RunStateScript.has_unlocked_skill(get_tree(), skill_id)
+		var cost: int = _skill_cost(skill_id)
+		button.disabled = unlocked
+		button.text = "%s - %d Threads%s" % [_skill_label(skill_id), cost, " (Unlocked)" if unlocked else ""]
+
+func _skill_label(skill_id: String) -> String:
+	for skill in MERCHANT_SKILLS:
+		if String(skill.get("id", "")) == skill_id:
+			return String(skill.get("label", skill_id))
+	return skill_id.capitalize()
+
+func _skill_cost(skill_id: String) -> int:
+	for skill in MERCHANT_SKILLS:
+		if String(skill.get("id", "")) == skill_id:
+			return int(skill.get("cost", 0))
+	return 0
+
+func _mark_non_combat_interaction_complete(reason: String) -> void:
+	if non_combat_interaction_complete:
+		return
+	non_combat_interaction_complete = true
+	_record_room_event("NON_COMBAT_ROOM_INTERACTION_COMPLETE", {
+		"room_index": current_room_index,
+		"room_type": selected_room_type,
+		"room_id": selected_room_id,
+		"reason": reason
+	})
+	_update_room_gate_reveal()
+
+func _set_non_combat_feedback(message: String) -> void:
+	if non_combat_feedback_label != null:
+		non_combat_feedback_label.text = message
+	_emit_arena_log(message)
+
+func _set_shop_feedback(message: String) -> void:
+	if shop_feedback_label != null:
+		shop_feedback_label.text = message
 
 func _create_fight_camera() -> void:
 	fight_camera = Camera2D.new()
@@ -259,16 +714,24 @@ func _calculate_combat_clear_camera_target(viewport_size: Vector2) -> Dictionary
 	}
 
 func _combat_clear_camera_active() -> bool:
-	return combat_manager != null and bool(combat_manager.get("combat_cleared"))
+	return _room_traversal_active()
 
 func _update_room_gate_reveal() -> void:
-	if combat_manager == null:
-		return
-	if bool(combat_manager.get("combat_cleared")):
+	if _room_gates_should_be_available():
 		if not room_gates_revealed:
 			_reveal_room_gates()
 	elif room_gates_revealed:
 		_hide_room_gates()
+
+func _room_traversal_active() -> bool:
+	if selected_room_type != ROOM_TYPE_COMBAT:
+		return true
+	return combat_manager != null and bool(combat_manager.get("combat_cleared"))
+
+func _room_gates_should_be_available() -> bool:
+	if selected_room_type != ROOM_TYPE_COMBAT:
+		return non_combat_interaction_complete and not _merchant_shop_open()
+	return combat_manager != null and bool(combat_manager.get("combat_cleared"))
 
 func _viewport_size() -> Vector2:
 	var size := get_viewport().get_visible_rect().size
@@ -399,6 +862,13 @@ func _clear_room_gate_nodes() -> void:
 func _generate_room_choices() -> Array[Dictionary]:
 	var rng := RandomNumberGenerator.new()
 	rng.randomize()
+	var next_room_index: int = current_room_index + 1
+	if next_room_index == FORCED_MERCHANT_ROOM_INDEX:
+		_record_room_event("ROOM_TYPE_FORCED", {
+			"room_index": next_room_index,
+			"room_type": ROOM_TYPE_MERCHANT
+		})
+		return [_make_room_choice(ROOM_TYPE_MERCHANT, "M")]
 	var choice_count: int = clampi(rng.randi_range(min_room_gate_choices, max_room_gate_choices), 2, 3)
 	var choices: Array[Dictionary] = []
 	var used_non_combat: Dictionary = {}
@@ -414,7 +884,7 @@ func _generate_room_choices() -> Array[Dictionary]:
 		if used_non_combat.has(room_type):
 			continue
 		used_non_combat[room_type] = true
-		choices.append(_make_room_choice(room_type, "R" if room_type == ROOM_TYPE_REST else "M"))
+		choices.append(_make_room_choice(room_type, _room_type_label(room_type)))
 	choices.shuffle()
 	return choices
 
@@ -457,7 +927,7 @@ func _make_room_choice(room_type: String, room_id: String) -> Dictionary:
 	return {
 		"room_type": room_type,
 		"room_id": room_id,
-		"label": room_id
+		"label": _room_type_label(room_type, room_id)
 	}
 
 func _gate_specs_for_choice_count(choice_count: int) -> Array[Dictionary]:
@@ -540,6 +1010,16 @@ func _create_room_gate(gate_data: Dictionary) -> void:
 
 	gate.body_entered.connect(_on_room_gate_body_entered.bind(gate_data))
 	_create_path_preview_to_gate(gate_position, _room_type_color(room_type))
+	_record_room_event("ROOM_MARKER_CREATED", {
+		"room_index": current_room_index,
+		"room_type": room_type,
+		"room_id": String(gate_data.get("room_id", "")),
+		"marker_kind": "gate",
+		"label": String(gate_data.get("label", "")),
+		"exit_direction": exit_direction,
+		"color": _color_to_dict(_room_type_color(room_type)),
+		"position": _vector_to_dict(gate_position)
+	})
 
 func _create_path_preview_to_gate(gate_position: Vector2, color: Color) -> void:
 	if room_gate_path_layer == null:
@@ -554,8 +1034,17 @@ func _create_path_preview_to_gate(gate_position: Vector2, color: Color) -> void:
 	room_gate_path_layer.add_child(path)
 
 func _on_room_gate_body_entered(body: Node, gate_data: Dictionary) -> void:
-	if room_gate_selection_locked or body != player:
+	if body != player:
 		return
+	if room_transition_in_progress or room_gate_selection_locked:
+		_emit_arena_log("Room gate ignored: transition already in progress.")
+		_record_room_event("ROOM_GATE_IGNORED", {
+			"room_index": current_room_index,
+			"reason": "transition_in_progress",
+			"gate": _gate_event_data(gate_data)
+		})
+		return
+	room_transition_in_progress = true
 	room_gate_selection_locked = true
 	_set_room_gates_enabled(false)
 	var event_data: Dictionary = _gate_event_data(gate_data)
@@ -568,12 +1057,18 @@ func _set_room_gates_enabled(enabled: bool) -> void:
 	for child in room_gate_layer.get_children():
 		var area := child as Area2D
 		if area != null:
-			area.monitoring = enabled
+			area.set_deferred("monitoring", enabled)
+			for area_child in area.get_children():
+				var shape := area_child as CollisionShape2D
+				if shape != null:
+					shape.set_deferred("disabled", not enabled)
 
 func _select_next_room(gate_data: Dictionary) -> void:
 	var room_type: String = String(gate_data["room_type"])
 	var room_id: String = String(gate_data["room_id"])
 	var exit_direction: String = String(gate_data["exit_direction"])
+	var selected_gate_room_type: String = room_type
+	var selected_gate_room_id: String = room_id
 	var next_room_index: int = current_room_index + 1
 	var assigned_next_entry_side: String = RunStateScript.exit_direction_to_next_entry_side(exit_direction, next_entry_side)
 	var next_player_starts_left: bool = assigned_next_entry_side == RunStateScript.SIDE_LEFT
@@ -594,12 +1089,14 @@ func _select_next_room(gate_data: Dictionary) -> void:
 		"exit_direction": exit_direction,
 		"next_entry_side": assigned_next_entry_side,
 		"next_player_side": "LEFT" if next_player_starts_left else "RIGHT",
-		"placeholder_behavior": "reload_current_scene"
+		"placeholder_behavior": "reload_arena_as_%s" % room_type,
+		"selected_gate_room_type": selected_gate_room_type,
+		"selected_gate_room_id": selected_gate_room_id
 	})
 	if room_type == ROOM_TYPE_REST:
-		_emit_arena_log("REST placeholder selected; reloading debug Arena.")
+		_emit_arena_log("Rest room selected; loading non-combat room.")
 	elif room_type == ROOM_TYPE_MERCHANT:
-		_emit_arena_log("MERCHANT placeholder selected; reloading debug Arena.")
+		_emit_arena_log("Merchant room selected; loading non-combat room.")
 	call_deferred("_reload_current_scene_after_gate")
 
 func _persist_player_hp_for_next_room(room_type: String, room_id: String, exit_direction: String, assigned_next_entry_side: String) -> void:
@@ -627,13 +1124,16 @@ func _store_next_room_metadata(next_room_index: int, room_type: String, room_id:
 		"previous_exit_direction": exit_direction,
 		"next_entry_side": assigned_next_entry_side,
 		"selected_combat_mode": RunStateScript.selected_combat_mode(get_tree(), "TIME_TACTICAL"),
-		"player_current_hp": RunStateScript.player_current_hp(get_tree(), int(player.max_hp) if player != null and "max_hp" in player else 100)
+		"player_current_hp": RunStateScript.player_current_hp(get_tree(), int(player.max_hp) if player != null and "max_hp" in player else 100),
+		"memory_threads": RunStateScript.memory_threads(get_tree())
 	})
 
 func _reload_current_scene_after_gate() -> void:
 	get_tree().paused = false
 	var err: Error = get_tree().reload_current_scene()
 	if err != OK:
+		room_transition_in_progress = false
+		room_gate_selection_locked = false
 		_emit_arena_log("Room reload failed: %s." % error_string(err))
 
 func _gate_event_data(gate_data: Dictionary) -> Dictionary:
@@ -647,14 +1147,35 @@ func _gate_event_data(gate_data: Dictionary) -> Dictionary:
 		"exit_direction": String(gate_data.get("exit_direction", ""))
 	}
 
+func _room_type_label(room_type: String, room_id: String = "") -> String:
+	match room_type:
+		ROOM_TYPE_COMBAT:
+			return room_id if room_id != "" else "C"
+		ROOM_TYPE_ELITE:
+			return "E"
+		ROOM_TYPE_MERCHANT:
+			return "M"
+		ROOM_TYPE_REST:
+			return "R"
+		ROOM_TYPE_BOSS:
+			return "B"
+		_:
+			return room_id if room_id != "" else "?"
+
 func _room_type_color(room_type: String) -> Color:
 	match room_type:
+		ROOM_TYPE_COMBAT:
+			return Color(1.0, 0.18, 0.14, 0.76)
+		ROOM_TYPE_ELITE:
+			return Color(0.78, 0.28, 1.0, 0.78)
 		ROOM_TYPE_REST:
 			return Color(0.18, 0.78, 0.36, 0.76)
 		ROOM_TYPE_MERCHANT:
 			return Color(0.22, 0.48, 1.0, 0.76)
+		ROOM_TYPE_BOSS:
+			return Color(0.55, 0.04, 0.04, 0.86)
 		_:
-			return Color(1.0, 0.18, 0.14, 0.76)
+			return Color(0.64, 0.64, 0.64, 0.76)
 
 func _record_room_event(event_type: String, data: Dictionary) -> void:
 	if combat_manager != null and combat_manager.has_method("record_room_event"):
@@ -667,3 +1188,11 @@ func _vector_to_dict(value: Variant) -> Dictionary:
 		return {"x": 0.0, "y": 0.0}
 	var vector: Vector2 = value
 	return {"x": vector.x, "y": vector.y}
+
+func _color_to_dict(color: Color) -> Dictionary:
+	return {
+		"r": color.r,
+		"g": color.g,
+		"b": color.b,
+		"a": color.a
+	}

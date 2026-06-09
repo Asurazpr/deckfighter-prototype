@@ -91,6 +91,7 @@ var waiting_for_defense := false
 var combat_over := false
 var combat_cleared := false
 var player_defeated := false
+var non_combat_room_active := false
 var fight_started := false
 var punish_in_progress := false
 var enemy_intent_scheduled := false
@@ -247,6 +248,9 @@ func _setup_combat_systems() -> void:
 	enemy_actor_state.setup("enemy")
 
 func _begin_combat() -> void:
+	if not _current_run_room_is_combat():
+		enter_non_combat_room(RunStateScript.selected_room_type(get_tree()), RunStateScript.selected_room_id(get_tree()))
+		return
 	deck_manager.start_combat()
 	frame_advantage_changed.emit(frame_advantage)
 	_log_architecture_validation()
@@ -282,7 +286,10 @@ func is_fight_started() -> bool:
 	return fight_started
 
 func should_show_pre_fight_controls() -> bool:
-	return not fight_started and not combat_over and not RunStateScript.is_run_started(get_tree())
+	return _current_run_room_is_combat() and not fight_started and not combat_over and not RunStateScript.is_run_started(get_tree())
+
+func get_memory_threads() -> int:
+	return RunStateScript.memory_threads(get_tree())
 
 func get_control_mode_name() -> String:
 	match control_mode:
@@ -326,6 +333,37 @@ func _apply_run_state_combat_mode() -> void:
 	if not RunStateScript.has_selected_combat_mode(get_tree()):
 		return
 	control_mode = _control_mode_from_name(RunStateScript.selected_combat_mode(get_tree(), get_control_mode_name()))
+
+func _current_run_room_is_combat() -> bool:
+	return RunStateScript.selected_room_type(get_tree()) == RunStateScript.ROOM_TYPE_COMBAT
+
+func enter_non_combat_room(room_type: String, room_id: String) -> void:
+	if non_combat_room_active:
+		return
+	non_combat_room_active = true
+	combat_over = true
+	combat_cleared = false
+	player_defeated = false
+	fight_started = false
+	Engine.time_scale = 1.0
+	frame_advantage = 0
+	frame_advantage_changed.emit(frame_advantage)
+	if queue_resolver != null:
+		queue_resolver.clear()
+	if player != null:
+		if player.has_method("set_input_enabled"):
+			player.set_input_enabled(true)
+		if player.has_method("set_free_movement_enabled"):
+			player.set_free_movement_enabled(true)
+	if enemy != null and enemy.has_method("enter_non_combat_hidden_state"):
+		enemy.enter_non_combat_hidden_state()
+	_clear_attack_hitboxes()
+	_record_combat_event("NON_COMBAT_ROOM_LOADED", "NON_COMBAT_ROOM_LOADED", {
+		"room_type": room_type,
+		"room_id": room_id,
+		"room_index": RunStateScript.room_index(get_tree())
+	})
+	log_message.emit("NON_COMBAT_ROOM_LOADED: %s %s." % [room_type.to_upper(), room_id])
 
 func reset_run_state_for_restart(source := "restart") -> void:
 	var current_player_hp: int = 0
@@ -4176,11 +4214,36 @@ func _on_enemy_defeated() -> void:
 		"enemy_hp": enemy.hp if enemy != null and "hp" in enemy else 0,
 		"control_mode": get_control_mode_name()
 	})
+	_award_memory_threads_for_combat_clear()
 	_clear_enemy_activity_for_defeat()
 	_record_combat_event("COMBAT_CLEAR", "COMBAT_CLEAR", {
 		"control_mode": get_control_mode_name()
 	})
 	_end_combat("COMBAT_CLEAR")
+
+func _award_memory_threads_for_combat_clear() -> void:
+	var room_type: String = RunStateScript.selected_room_type(get_tree())
+	var amount: int = _memory_thread_reward_for_room_type(room_type)
+	if amount <= 0:
+		return
+	var total: int = RunStateScript.add_memory_threads(get_tree(), amount)
+	log_message.emit("MEMORY_THREADS_GAINED amount=%d total=%d" % [amount, total])
+	_record_combat_event("MEMORY_THREADS_GAINED", "MEMORY_THREADS_GAINED", {
+		"amount": amount,
+		"total": total,
+		"room_type": room_type,
+		"room_id": RunStateScript.selected_room_id(get_tree()),
+		"room_index": RunStateScript.room_index(get_tree())
+	})
+
+func _memory_thread_reward_for_room_type(room_type: String) -> int:
+	match room_type:
+		RunStateScript.ROOM_TYPE_ELITE:
+			return 25
+		RunStateScript.ROOM_TYPE_BOSS:
+			return 50
+		_:
+			return 10
 
 func _on_player_defeated() -> void:
 	if combat_over:

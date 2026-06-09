@@ -45,6 +45,7 @@ var player_stance_bar: ProgressBar
 var enemy_hud_title_label: Label
 var enemy_hp_label: Label
 var enemy_stance_label: Label
+var memory_threads_label: Label
 var player_hud_on_left := true
 var hud_side_locked := false
 var main_debug_label: Label
@@ -98,6 +99,7 @@ func _process(_delta: float) -> void:
 	if control_mode_button != null and combat_manager.has_method("is_fight_started"):
 		control_mode_button.visible = _should_show_pre_fight_controls()
 		_refresh_control_mode_button()
+	_refresh_memory_threads_label()
 	_refresh_impact_bar()
 	_refresh_queue_label()
 
@@ -523,10 +525,21 @@ func _build_side_hud_panels(stats_grid: GridContainer) -> void:
 	_reparent_to_container(enemy_hp_bar, enemy_grid)
 	_reparent_to_container(enemy_stance_label, enemy_grid)
 	_reparent_to_container(stance_bar, enemy_grid)
+	memory_threads_label = Label.new()
+	memory_threads_label.text = "Threads: 0"
+	memory_threads_label.add_theme_font_size_override("font_size", PRIMARY_FONT_SIZE)
+	memory_threads_label.add_theme_color_override("font_color", Color(0.96, 0.86, 0.52))
+	status_box.add_child(memory_threads_label)
 	_reparent_to_container(frame_label, status_box)
 	_reparent_to_container(log_label, status_box)
 	_restore_enemy_hud()
 	_refresh_hud_side()
+
+func _refresh_memory_threads_label() -> void:
+	if memory_threads_label == null or combat_manager == null:
+		return
+	if combat_manager.has_method("get_memory_threads"):
+		memory_threads_label.text = "Threads: %d" % int(combat_manager.get_memory_threads())
 
 func _create_primary_hud_panel(panel_name: String, title: String) -> PanelContainer:
 	var panel := PanelContainer.new()
