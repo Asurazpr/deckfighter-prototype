@@ -20,6 +20,8 @@ const ROOM_TYPE_ELITE := "elite"
 const ROOM_TYPE_REST := "rest"
 const ROOM_TYPE_MERCHANT := "merchant"
 const ROOM_TYPE_BOSS := "boss"
+const ACT_NUMBER := 1
+const ACT_ROOM_COUNT := 12
 
 const SIDE_LEFT := "LEFT"
 const SIDE_RIGHT := "RIGHT"
@@ -78,6 +80,12 @@ static func room_index(tree: SceneTree) -> int:
 	if tree == null:
 		return 0
 	return int(tree.get_meta(META_ROOM_INDEX, 0))
+
+static func room_number_for_index(index: int) -> int:
+	return maxi(1, index + 1)
+
+static func current_room_number(tree: SceneTree) -> int:
+	return room_number_for_index(room_index(tree))
 
 static func selected_room_type(tree: SceneTree) -> String:
 	if tree == null:

@@ -65,9 +65,14 @@ var reward_overlay: Control
 var reward_subtitle_label: Label
 var reward_preview_label: Label
 var reward_choice_buttons: Array[Button] = []
+var reward_skip_button: Button
 var current_reward_choices: Array[String] = []
 var combat_reward_screen_opened := false
 var combat_reward_selected := false
+var act_complete_canvas: CanvasLayer
+var act_complete_overlay: Control
+var act_complete_feedback_label: Label
+var act_complete_shown := false
 var current_room_index := 0
 var selected_room_type := "combat"
 var selected_room_id := "debug_start"
@@ -80,7 +85,13 @@ const ROOM_TYPE_ELITE := RunStateScript.ROOM_TYPE_ELITE
 const ROOM_TYPE_REST := "rest"
 const ROOM_TYPE_MERCHANT := "merchant"
 const ROOM_TYPE_BOSS := RunStateScript.ROOM_TYPE_BOSS
-const FORCED_MERCHANT_ROOM_INDEX := 5
+const FIXED_ACT_ROOM_TYPES := {
+	5: ROOM_TYPE_MERCHANT,
+	6: ROOM_TYPE_ELITE,
+	11: ROOM_TYPE_REST,
+	12: ROOM_TYPE_BOSS
+}
+const REWARD_SKIP_MEMORY_THREAD_BONUS := 5
 const EXIT_LEFT := "LEFT"
 const EXIT_RIGHT := "RIGHT"
 const EXIT_UP := "UP"
@@ -102,6 +113,7 @@ func _ready() -> void:
 	_create_wall_debug()
 	_create_room_gate_layer()
 	_create_reward_screen_overlay()
+	_create_act_complete_overlay()
 	_create_fight_camera()
 	_set_combat_geometry_debug_visible(show_combat_geometry_debug, false)
 	ui_manager.bind(player, enemy, deck_manager, combat_manager)
@@ -680,6 +692,71 @@ func _create_reward_screen_overlay() -> void:
 		box.add_child(button)
 		reward_choice_buttons.append(button)
 
+	reward_skip_button = Button.new()
+	reward_skip_button.text = "Skip Reward (+%d Threads)" % REWARD_SKIP_MEMORY_THREAD_BONUS
+	reward_skip_button.custom_minimum_size = Vector2(520.0, 46.0)
+	reward_skip_button.add_theme_font_size_override("font_size", 18)
+	reward_skip_button.pressed.connect(_on_reward_skip_pressed)
+	box.add_child(reward_skip_button)
+
+func _create_act_complete_overlay() -> void:
+	act_complete_canvas = CanvasLayer.new()
+	act_complete_canvas.name = "ActCompleteCanvas"
+	act_complete_canvas.layer = 34
+	add_child(act_complete_canvas)
+
+	var overlay := ColorRect.new()
+	overlay.name = "ActCompleteOverlay"
+	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.color = Color(0.0, 0.0, 0.0, 0.62)
+	overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	overlay.visible = false
+	act_complete_canvas.add_child(overlay)
+	act_complete_overlay = overlay
+
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.add_child(center)
+
+	var panel := PanelContainer.new()
+	panel.name = "ActCompletePanel"
+	panel.custom_minimum_size = Vector2(520.0, 280.0)
+	panel.add_theme_stylebox_override("panel", _room_panel_style(Color(0.045, 0.042, 0.052, 0.98), Color(1.0, 0.82, 0.34, 0.88)))
+	center.add_child(panel)
+
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 30)
+	margin.add_theme_constant_override("margin_top", 26)
+	margin.add_theme_constant_override("margin_right", 30)
+	margin.add_theme_constant_override("margin_bottom", 26)
+	panel.add_child(margin)
+
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 16)
+	margin.add_child(box)
+
+	var title := Label.new()
+	title.text = "Act 1 Complete"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 34)
+	title.add_theme_color_override("font_color", Color(1.0, 0.92, 0.70))
+	box.add_child(title)
+
+	act_complete_feedback_label = Label.new()
+	act_complete_feedback_label.text = "Act 2 pathing is a placeholder for now."
+	act_complete_feedback_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	act_complete_feedback_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	act_complete_feedback_label.add_theme_font_size_override("font_size", 18)
+	act_complete_feedback_label.add_theme_color_override("font_color", Color(0.88, 0.92, 0.96))
+	box.add_child(act_complete_feedback_label)
+
+	var continue_button := Button.new()
+	continue_button.text = "Continue to Act 2"
+	continue_button.custom_minimum_size = Vector2(440.0, 48.0)
+	continue_button.add_theme_font_size_override("font_size", 20)
+	continue_button.pressed.connect(_on_continue_act_two_pressed)
+	box.add_child(continue_button)
+
 func _open_combat_reward_screen() -> void:
 	if reward_overlay == null:
 		return
@@ -713,13 +790,32 @@ func _open_combat_reward_screen() -> void:
 	})
 
 func _generate_reward_choices() -> Array[String]:
-	var rewards: Array[String] = RunStateScript.technique_ids()
-	rewards.shuffle()
+	var rewards: Array[String] = _available_reward_technique_ids()
 	var choices: Array[String] = []
 	var choice_count: int = mini(3, rewards.size())
 	for i in range(choice_count):
 		choices.append(rewards[i])
 	return choices
+
+func _available_reward_technique_ids() -> Array[String]:
+	var owned: Array[String] = RunStateScript.techniques(get_tree())
+	var unique_rewards: Array[String] = []
+	for technique_id in RunStateScript.technique_ids():
+		if not owned.has(technique_id):
+			unique_rewards.append(technique_id)
+	unique_rewards.shuffle()
+	if unique_rewards.size() >= 3:
+		return unique_rewards
+	var fallback_rewards: Array[String] = RunStateScript.technique_ids()
+	fallback_rewards.shuffle()
+	if not unique_rewards.is_empty():
+		for technique_id in fallback_rewards:
+			if unique_rewards.size() >= 3:
+				break
+			if not unique_rewards.has(technique_id):
+				unique_rewards.append(technique_id)
+		return unique_rewards
+	return fallback_rewards
 
 func _on_reward_choice_pressed(choice_index: int) -> void:
 	if choice_index < 0 or choice_index >= current_reward_choices.size():
@@ -749,7 +845,55 @@ func _on_reward_choice_pressed(choice_index: int) -> void:
 		"techniques": RunStateScript.techniques(get_tree())
 	})
 	_emit_arena_log("%s added to run rewards." % _reward_display_name(reward_id))
-	_update_room_gate_reveal()
+	_finish_combat_reward_flow()
+
+func _on_reward_skip_pressed() -> void:
+	combat_reward_selected = true
+	if reward_overlay != null:
+		reward_overlay.visible = false
+	if player != null and player.has_method("set_free_movement_enabled"):
+		player.set_free_movement_enabled(true)
+	var total_threads: int = RunStateScript.add_memory_threads(get_tree(), REWARD_SKIP_MEMORY_THREAD_BONUS)
+	_record_room_event("REWARD_SKIPPED", {
+		"room_index": current_room_index,
+		"room_number": RunStateScript.room_number_for_index(current_room_index),
+		"room_type": selected_room_type,
+		"room_id": selected_room_id,
+		"bonus_threads": REWARD_SKIP_MEMORY_THREAD_BONUS,
+		"total": total_threads
+	})
+	_emit_arena_log("Reward skipped. +%d Threads." % REWARD_SKIP_MEMORY_THREAD_BONUS)
+	_finish_combat_reward_flow()
+
+func _finish_combat_reward_flow() -> void:
+	if selected_room_type == ROOM_TYPE_BOSS:
+		_show_act_complete_overlay()
+	else:
+		_update_room_gate_reveal()
+
+func _show_act_complete_overlay() -> void:
+	if act_complete_overlay == null or act_complete_shown:
+		return
+	act_complete_shown = true
+	_hide_room_gates()
+	act_complete_overlay.visible = true
+	if player != null and player.has_method("set_free_movement_enabled"):
+		player.set_free_movement_enabled(false)
+	_record_room_event("ACT_COMPLETE", {
+		"act": RunStateScript.ACT_NUMBER,
+		"room_index": current_room_index,
+		"room_number": RunStateScript.room_number_for_index(current_room_index),
+		"room_type": selected_room_type,
+		"room_id": selected_room_id
+	})
+
+func _on_continue_act_two_pressed() -> void:
+	if act_complete_feedback_label != null:
+		act_complete_feedback_label.text = "Act 2 is not implemented yet. Restart or inspect the run state for now."
+	_record_room_event("ACT_2_PLACEHOLDER_SELECTED", {
+		"act": 2,
+		"previous_act": RunStateScript.ACT_NUMBER
+	})
 
 func _on_reward_choice_hovered(choice_index: int) -> void:
 	_update_reward_preview(choice_index)
@@ -916,6 +1060,8 @@ func _room_traversal_active() -> bool:
 
 func _room_gates_should_be_available() -> bool:
 	if _room_type_has_combat_reward():
+		if selected_room_type == ROOM_TYPE_BOSS:
+			return false
 		return combat_manager != null and bool(combat_manager.get("combat_cleared")) and combat_reward_selected
 	return non_combat_interaction_complete and not _merchant_shop_open()
 
@@ -1059,12 +1205,16 @@ func _generate_room_choices() -> Array[Dictionary]:
 	var rng := RandomNumberGenerator.new()
 	rng.randomize()
 	var next_room_index: int = current_room_index + 1
-	if next_room_index == FORCED_MERCHANT_ROOM_INDEX:
+	var next_room_number: int = RunStateScript.room_number_for_index(next_room_index)
+	var forced_room_type: String = _fixed_act_room_type_for_room_number(next_room_number)
+	if forced_room_type != "":
 		_record_room_event("ROOM_TYPE_FORCED", {
-			"room_index": next_room_index,
-			"room_type": ROOM_TYPE_MERCHANT
+			"room_index": next_room_number,
+			"internal_room_index": next_room_index,
+			"room_type": forced_room_type,
+			"reason": "act_fixed_beat"
 		})
-		return [_make_room_choice(ROOM_TYPE_MERCHANT, "M")]
+		return _generate_fixed_act_room_choices(rng, forced_room_type, next_room_number)
 	var choice_count: int = clampi(rng.randi_range(min_room_gate_choices, max_room_gate_choices), 2, 3)
 	var choices: Array[Dictionary] = []
 	var used_non_combat: Dictionary = {}
@@ -1083,6 +1233,29 @@ func _generate_room_choices() -> Array[Dictionary]:
 		choices.append(_make_room_choice(room_type, _room_type_label(room_type)))
 	choices.shuffle()
 	return choices
+
+func _fixed_act_room_type_for_room_number(room_number: int) -> String:
+	return String(FIXED_ACT_ROOM_TYPES.get(room_number, ""))
+
+func _generate_fixed_act_room_choices(rng: RandomNumberGenerator, room_type: String, room_index: int) -> Array[Dictionary]:
+	var choice_count: int = clampi(rng.randi_range(min_room_gate_choices, max_room_gate_choices), 2, 3)
+	var choices: Array[Dictionary] = []
+	for i in range(choice_count):
+		choices.append(_make_room_choice(room_type, _fixed_act_room_id(room_type, room_index, i)))
+	return choices
+
+func _fixed_act_room_id(room_type: String, room_index: int, choice_index: int) -> String:
+	match room_type:
+		ROOM_TYPE_MERCHANT:
+			return "M"
+		ROOM_TYPE_ELITE:
+			return "E%d" % maxi(1, choice_index + 1)
+		ROOM_TYPE_REST:
+			return "R"
+		ROOM_TYPE_BOSS:
+			return "B%d" % room_index
+		_:
+			return _room_type_label(room_type)
 
 func _room_type_weights() -> Dictionary:
 	var rest_weight: int = 10 + current_room_index * 5

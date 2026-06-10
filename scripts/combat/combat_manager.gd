@@ -335,7 +335,10 @@ func _apply_run_state_combat_mode() -> void:
 	control_mode = _control_mode_from_name(RunStateScript.selected_combat_mode(get_tree(), get_control_mode_name()))
 
 func _current_run_room_is_combat() -> bool:
-	return RunStateScript.selected_room_type(get_tree()) == RunStateScript.ROOM_TYPE_COMBAT
+	var room_type: String = RunStateScript.selected_room_type(get_tree())
+	return room_type == RunStateScript.ROOM_TYPE_COMBAT \
+		or room_type == RunStateScript.ROOM_TYPE_ELITE \
+		or room_type == RunStateScript.ROOM_TYPE_BOSS
 
 func enter_non_combat_room(room_type: String, room_id: String) -> void:
 	if non_combat_room_active:

@@ -46,6 +46,7 @@ var player_stance_bar: ProgressBar
 var enemy_hud_title_label: Label
 var enemy_hp_label: Label
 var enemy_stance_label: Label
+var room_status_label: Label
 var memory_threads_label: Label
 var player_hud_on_left := true
 var hud_side_locked := false
@@ -697,6 +698,11 @@ func _build_side_hud_panels(stats_grid: GridContainer) -> void:
 	_reparent_to_container(enemy_hp_bar, enemy_grid)
 	_reparent_to_container(enemy_stance_label, enemy_grid)
 	_reparent_to_container(stance_bar, enemy_grid)
+	room_status_label = Label.new()
+	room_status_label.text = "Act 1 Room 1/12 | Room Type: Combat"
+	room_status_label.add_theme_font_size_override("font_size", PRIMARY_FONT_SIZE)
+	room_status_label.add_theme_color_override("font_color", Color(0.78, 0.88, 1.0))
+	status_box.add_child(room_status_label)
 	memory_threads_label = Label.new()
 	memory_threads_label.text = "Threads: 0"
 	memory_threads_label.add_theme_font_size_override("font_size", PRIMARY_FONT_SIZE)
@@ -712,6 +718,28 @@ func _refresh_memory_threads_label() -> void:
 		return
 	if combat_manager.has_method("get_memory_threads"):
 		memory_threads_label.text = "Threads: %d" % int(combat_manager.get_memory_threads())
+	if room_status_label != null:
+		room_status_label.text = "Act %d Room %d/%d | Room Type: %s" % [
+			RunStateScript.ACT_NUMBER,
+			RunStateScript.current_room_number(get_tree()),
+			RunStateScript.ACT_ROOM_COUNT,
+			_room_type_display_name(RunStateScript.selected_room_type(get_tree()))
+		]
+
+func _room_type_display_name(room_type: String) -> String:
+	match room_type:
+		RunStateScript.ROOM_TYPE_COMBAT:
+			return "Combat"
+		RunStateScript.ROOM_TYPE_ELITE:
+			return "Elite"
+		RunStateScript.ROOM_TYPE_REST:
+			return "Rest"
+		RunStateScript.ROOM_TYPE_MERCHANT:
+			return "Merchant"
+		RunStateScript.ROOM_TYPE_BOSS:
+			return "Boss"
+		_:
+			return room_type.capitalize()
 
 func _create_primary_hud_panel(panel_name: String, title: String) -> PanelContainer:
 	var panel := PanelContainer.new()
@@ -753,7 +781,7 @@ func _create_status_hud_panel() -> PanelContainer:
 	var panel := PanelContainer.new()
 	panel.name = "StatusHUD"
 	panel.position = Vector2(520, 18)
-	panel.size = Vector2(560, 72)
+	panel.size = Vector2(560, 96)
 	panel.add_theme_stylebox_override("panel", _panel_style(Color(0.035, 0.04, 0.05, 0.82), Color(0.22, 0.28, 0.34, 0.55)))
 	root.add_child(panel)
 
